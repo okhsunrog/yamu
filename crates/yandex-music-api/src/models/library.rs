@@ -5,6 +5,92 @@ use serde_json::Value;
 
 use super::{Artist, Cover, Id, Track};
 
+/// Revision returned after changing the liked-track library.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LibraryRevision {
+    pub revision: u64,
+}
+
+/// Visibility accepted by playlist creation and update endpoints.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaylistVisibility {
+    Private,
+    Public,
+}
+
+impl std::fmt::Display for PlaylistVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Private => f.write_str("private"),
+            Self::Public => f.write_str("public"),
+        }
+    }
+}
+
+/// A track reference accepted by a playlist insertion operation.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistTrackId {
+    pub id: Id,
+    pub album_id: Id,
+}
+
+impl PlaylistTrackId {
+    pub fn new(id: impl Into<Id>, album_id: impl Into<Id>) -> Self {
+        Self {
+            id: id.into(),
+            album_id: album_id.into(),
+        }
+    }
+}
+
+/// One atomic playlist change in the API's diff format.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum PlaylistOperation {
+    Insert {
+        at: usize,
+        tracks: Vec<PlaylistTrackId>,
+    },
+    Delete {
+        from: usize,
+        to: usize,
+    },
+}
+
+/// Ordered operations applied to one exact playlist revision.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PlaylistDiff(Vec<PlaylistOperation>);
+
+impl PlaylistDiff {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(mut self, at: usize, tracks: impl IntoIterator<Item = PlaylistTrackId>) -> Self {
+        self.0.push(PlaylistOperation::Insert {
+            at,
+            tracks: tracks.into_iter().collect(),
+        });
+        self
+    }
+
+    pub fn delete(mut self, from: usize, to: usize) -> Self {
+        self.0.push(PlaylistOperation::Delete { from, to });
+        self
+    }
+
+    pub fn operations(&self) -> &[PlaylistOperation] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// A compact track entry used by liked-track lists and playlists.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

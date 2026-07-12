@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "apps/ym-auth",
+    "apps/ym-edit",
     "apps/ym-inspect",
     "crates/yandex-music-api",
     "crates/yandex-music-credentials",

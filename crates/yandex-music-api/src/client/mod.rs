@@ -7,6 +7,7 @@ use crate::{Error, Result};
 mod account;
 mod albums;
 mod library;
+mod mutations;
 mod request;
 mod search;
 mod tracks;

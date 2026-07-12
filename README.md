@@ -8,6 +8,7 @@ Rust libraries and development tools for the unofficial Yandex Music API.
 - `yandex-music-credentials` — shared local credential storage for workspace applications.
 - `ym-auth` — login, logout and credential inspection tool.
 - `ym-inspect` — read-only API exploration client.
+- `ym-edit` — explicit liked-track and playlist mutation client.
 
 All applications share the `default` credential profile stored outside the
 repository. Run `cargo run -p ym-auth -- path` to display its location.
@@ -50,3 +51,23 @@ cargo run -p ym-inspect -- playlist <owner> <kind>
 
 Pass `--json` to print the complete modeled response including fields retained
 for forward compatibility.
+
+## Editing the library
+
+`ym-edit` keeps mutations separate from the read-only inspector:
+
+```console
+cargo run -p ym-edit -- like <track-id>...
+cargo run -p ym-edit -- unlike <track-id>...
+cargo run -p ym-edit -- playlist-create "My playlist"
+cargo run -p ym-edit -- playlist-rename <kind> "New title"
+cargo run -p ym-edit -- playlist-visibility <kind> public
+cargo run -p ym-edit -- playlist-add <kind> <track-id> <album-id> --at 0
+cargo run -p ym-edit -- playlist-remove <kind> --from 0 --to 1
+cargo run -p ym-edit -- playlist-delete <kind> --yes
+```
+
+Playlist track changes first fetch the current revision and submit a typed
+positional diff against that exact revision. A concurrent edit is reported as
+`PlaylistRevisionConflict` and is not retried automatically. Permanent playlist
+deletion requires `--yes`.

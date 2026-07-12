@@ -25,6 +25,16 @@ pub enum Error {
         body: Option<serde_json::Value>,
     },
 
+    #[error("playlist revision conflict (expected revision {expected_revision}): {message}")]
+    PlaylistRevisionConflict {
+        expected_revision: u64,
+        message: String,
+        body: Option<serde_json::Value>,
+    },
+
+    #[error("failed to serialize API request: {0}")]
+    SerializeRequest(#[from] serde_json::Error),
+
     #[error(
         "Yandex OAuth error (HTTP {status}): {code}{description}",
         description = description

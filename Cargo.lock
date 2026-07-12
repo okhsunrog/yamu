@@ -1902,6 +1902,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-edit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "yandex-music-api",
+ "yandex-music-credentials",
+]
+
+[[package]]
 name = "ym-inspect"
 version = "0.1.0"
 dependencies = [
