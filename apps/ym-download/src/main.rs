@@ -42,7 +42,7 @@ enum Command {
         /// Highest requested quality; the server may return a lower tier.
         #[arg(long, default_value_t = DownloadQuality::Lossless)]
         quality: DownloadQuality,
-        /// Destination path; defaults to `track-id.negotiated-extension`.
+        /// Destination path; defaults to `artist - title.negotiated-extension`.
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Replace an existing destination file.
@@ -152,10 +152,9 @@ async fn download_track(
     let info = negotiate(client, uid, track_id, quality).await?;
     let destination = match output {
         Some(path) => validate_output_extension(path, &info)?,
-        None => PathBuf::from(format!(
-            "{}.{}",
-            safe_file_component(track_id),
-            normalized_extension(&info)
+        None => PathBuf::from(default_track_filename(
+            &metadata,
+            normalized_extension(&info),
         )),
     };
     if tokio::fs::try_exists(&destination).await? && !force {
@@ -725,5 +724,38 @@ fn safe_file_component(value: &str) -> String {
         "untitled".to_owned()
     } else {
         trimmed.to_owned()
+    }
+}
+
+fn default_track_filename(metadata: &TrackMetadata, extension: &str) -> String {
+    format!(
+        "{} - {}.{extension}",
+        safe_file_component(&metadata.artist),
+        safe_file_component(&metadata.title),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_safe_default_track_filename() {
+        let metadata = TrackMetadata {
+            title: "Song: Part 1".to_owned(),
+            artist: "Artist/Band".to_owned(),
+            album: None,
+            album_artist: None,
+            genre: None,
+            year: None,
+            track_number: None,
+            disc_number: None,
+            cover_url: None,
+        };
+
+        assert_eq!(
+            default_track_filename(&metadata, "flac"),
+            "Artist_Band - Song_ Part 1.flac"
+        );
     }
 }
