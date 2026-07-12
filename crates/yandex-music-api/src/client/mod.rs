@@ -1,15 +1,24 @@
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use tokio::sync::Mutex;
 use url::Url;
 
 use crate::{Error, Result};
 
 mod account;
 mod albums;
+mod artists;
 #[cfg(feature = "downloads")]
 mod downloads;
 mod library;
+#[cfg(feature = "lyrics")]
+mod lyrics;
 mod mutations;
+mod recommendations;
 mod request;
 mod search;
 mod tracks;
@@ -24,6 +33,8 @@ pub struct Client {
     pub(super) http: reqwest::Client,
     pub(super) base_url: Url,
     pub(super) token: Option<String>,
+    pub(super) read_policy: ReadRequestPolicy,
+    pub(super) read_gate: Arc<Mutex<Instant>>,
 }
 
 impl fmt::Debug for Client {
@@ -31,6 +42,7 @@ impl fmt::Debug for Client {
         f.debug_struct("Client")
             .field("base_url", &self.base_url)
             .field("authenticated", &self.token.is_some())
+            .field("read_policy", &self.read_policy)
             .finish_non_exhaustive()
     }
 }
@@ -53,6 +65,25 @@ pub struct ClientBuilder {
     token: Option<String>,
     language: String,
     timeout: Duration,
+    read_policy: ReadRequestPolicy,
+}
+
+/// Throttling and retry policy applied only to idempotent GET requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadRequestPolicy {
+    pub max_attempts: u8,
+    pub min_interval: Duration,
+    pub initial_backoff: Duration,
+}
+
+impl Default for ReadRequestPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            min_interval: Duration::from_millis(25),
+            initial_backoff: Duration::from_millis(200),
+        }
+    }
 }
 
 impl fmt::Debug for ClientBuilder {
@@ -62,6 +93,7 @@ impl fmt::Debug for ClientBuilder {
             .field("authenticated", &self.token.is_some())
             .field("language", &self.language)
             .field("timeout", &self.timeout)
+            .field("read_policy", &self.read_policy)
             .finish()
     }
 }
@@ -73,6 +105,7 @@ impl Default for ClientBuilder {
             token: None,
             language: "ru".to_owned(),
             timeout: Duration::from_secs(15),
+            read_policy: ReadRequestPolicy::default(),
         }
     }
 }
@@ -102,6 +135,11 @@ impl ClientBuilder {
         self
     }
 
+    pub fn read_request_policy(mut self, policy: ReadRequestPolicy) -> Self {
+        self.read_policy = policy;
+        self
+    }
+
     pub fn build(self) -> Result<Client> {
         let http = reqwest::Client::builder()
             .timeout(self.timeout)
@@ -114,15 +152,24 @@ impl ClientBuilder {
                 let mut headers = reqwest::header::HeaderMap::new();
                 let language = reqwest::header::HeaderValue::from_str(&self.language)?;
                 headers.insert(reqwest::header::ACCEPT_LANGUAGE, language);
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-yandex-music-client"),
+                    reqwest::header::HeaderValue::from_static("YandexMusicAndroid/24023621"),
+                );
                 headers
             })
             .build()
             .map_err(Error::BuildClient)?;
 
+        let read_gate = Instant::now()
+            .checked_sub(self.read_policy.min_interval)
+            .unwrap_or_else(Instant::now);
         Ok(Client {
             http,
             base_url: self.base_url,
             token: self.token,
+            read_policy: self.read_policy,
+            read_gate: Arc::new(Mutex::new(read_gate)),
         })
     }
 }

@@ -44,9 +44,13 @@ pub enum Error {
     #[error("track download is unavailable ({name}): {message}")]
     DownloadUnavailable { name: String, message: String },
 
-    #[cfg(feature = "downloads")]
+    #[cfg(any(feature = "downloads", feature = "lyrics"))]
     #[error("system clock is before the Unix epoch")]
     InvalidSystemClock,
+
+    #[cfg(feature = "lyrics")]
+    #[error("track ID {0:?} cannot be signed for the lyrics endpoint")]
+    InvalidLyricsTrackId(String),
 
     #[cfg(feature = "oauth")]
     #[error(

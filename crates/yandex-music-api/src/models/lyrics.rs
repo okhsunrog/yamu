@@ -1,0 +1,44 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use url::Url;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LyricsFormat {
+    #[default]
+    Text,
+    Lrc,
+}
+
+impl LyricsFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "TEXT",
+            Self::Lrc => "LRC",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricsMajor {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub pretty_name: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackLyrics {
+    pub download_url: Url,
+    pub lyric_id: Option<u64>,
+    pub external_lyric_id: Option<String>,
+    #[serde(default)]
+    pub writers: Vec<String>,
+    pub major: Option<LyricsMajor>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}

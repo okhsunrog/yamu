@@ -7,7 +7,10 @@ use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
-    models::{Album, Id, Playlist, SearchResult, Track},
+    models::{
+        Album, ArtistAlbumSort, Id, LyricsFormat, PageRequest, Playlist, SearchResult, StationId,
+        Track,
+    },
 };
 
 #[derive(Debug, Parser)]
@@ -51,6 +54,44 @@ enum Command {
     Playlists,
     /// Fetch a playlist by owner and kind.
     Playlist { owner: String, kind: String },
+    /// Fetch an artist by ID.
+    Artist { id: String },
+    /// Fetch one page of an artist's tracks.
+    ArtistTracks {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        page: u32,
+        #[arg(long, default_value_t = 20)]
+        page_size: u32,
+    },
+    /// Fetch one page of an artist's albums.
+    ArtistAlbums {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        page: u32,
+        #[arg(long, default_value_t = 20)]
+        page_size: u32,
+    },
+    /// Fetch plain or synchronized lyrics.
+    Lyrics {
+        id: String,
+        #[arg(long)]
+        lrc: bool,
+    },
+    /// Fetch track recommendations for a playlist.
+    PlaylistRecommendations { owner: String, kind: String },
+    /// List Rotor radio stations.
+    Stations {
+        #[arg(long, default_value = "ru")]
+        language: String,
+    },
+    /// Fetch the next track sequence from a Rotor station.
+    StationTracks {
+        kind: String,
+        tag: String,
+        #[arg(long)]
+        queue: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -182,6 +223,129 @@ async fn run() -> Result<()> {
                 print_json(&mut output, &playlist)?;
             } else {
                 print_playlist(&mut output, &playlist)?;
+            }
+        }
+        Command::Artist { id } => {
+            let artists = client.artists([id]).await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &artists)?;
+            } else {
+                for artist in artists {
+                    writeln!(
+                        output,
+                        "{} [{}]",
+                        artist.name.as_deref().unwrap_or("unknown artist"),
+                        artist
+                            .id
+                            .map_or_else(|| "unknown".to_owned(), |id| id.to_string())
+                    )?;
+                }
+            }
+        }
+        Command::ArtistTracks {
+            id,
+            page,
+            page_size,
+        } => {
+            let result = client
+                .artist_tracks(id, PageRequest::new(page, page_size))
+                .await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &result)?;
+            } else {
+                for track in &result.tracks {
+                    print_track(&mut output, track)?;
+                }
+            }
+        }
+        Command::ArtistAlbums {
+            id,
+            page,
+            page_size,
+        } => {
+            let result = client
+                .artist_albums(id, PageRequest::new(page, page_size), ArtistAlbumSort::Year)
+                .await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &result)?;
+            } else {
+                for album in &result.albums {
+                    print_album(&mut output, album)?;
+                }
+            }
+        }
+        Command::Lyrics { id, lrc } => {
+            let metadata = client
+                .track_lyrics(
+                    id,
+                    if lrc {
+                        LyricsFormat::Lrc
+                    } else {
+                        LyricsFormat::Text
+                    },
+                )
+                .await?;
+            let lyrics = client.fetch_lyrics(&metadata).await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(
+                    &mut output,
+                    &serde_json::json!({"metadata": metadata, "lyrics": lyrics}),
+                )?;
+            } else {
+                write!(output, "{lyrics}")?;
+                if !lyrics.ends_with('\n') {
+                    writeln!(output)?;
+                }
+            }
+        }
+        Command::PlaylistRecommendations { owner, kind } => {
+            let result = client.playlist_recommendations(owner, kind).await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &result)?;
+            } else {
+                for track in &result.tracks {
+                    print_track(&mut output, track)?;
+                }
+            }
+        }
+        Command::Stations { language } => {
+            let stations = client.stations(language).await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &stations)?;
+            } else {
+                for result in stations {
+                    if let Some(station) = result.station {
+                        writeln!(
+                            output,
+                            "{} [{}]",
+                            station.name.as_deref().unwrap_or("unnamed station"),
+                            station
+                                .id
+                                .map_or_else(|| "unknown".to_owned(), |id| id.to_string())
+                        )?;
+                    }
+                }
+            }
+        }
+        Command::StationTracks { kind, tag, queue } => {
+            let result = client
+                .station_tracks(&StationId { kind, tag }, queue.map(Id::from))
+                .await?;
+            let mut output = io::stdout().lock();
+            if cli.json {
+                print_json(&mut output, &result)?;
+            } else {
+                for sequence in &result.sequence {
+                    if let Some(track) = &sequence.track {
+                        print_track(&mut output, track)?;
+                    }
+                }
             }
         }
     }

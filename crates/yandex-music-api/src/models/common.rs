@@ -34,3 +34,40 @@ impl From<&str> for Id {
         Self::String(value.to_owned())
     }
 }
+
+/// Zero-based page and bounded page size for paginated endpoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageRequest {
+    page: u32,
+    page_size: u32,
+}
+
+impl PageRequest {
+    pub fn new(page: u32, page_size: u32) -> Self {
+        Self {
+            page,
+            page_size: page_size.max(1),
+        }
+    }
+
+    pub const fn page(self) -> u32 {
+        self.page
+    }
+
+    pub const fn page_size(self) -> u32 {
+        self.page_size
+    }
+
+    pub fn next(self) -> Self {
+        Self {
+            page: self.page.saturating_add(1),
+            ..self
+        }
+    }
+}
+
+impl Default for PageRequest {
+    fn default() -> Self {
+        Self::new(0, 100)
+    }
+}

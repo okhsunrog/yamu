@@ -11,5 +11,5 @@ pub mod credentials;
 mod error;
 pub mod models;
 
-pub use client::{Client, ClientBuilder, SearchOptions, SearchType};
+pub use client::{Client, ClientBuilder, ReadRequestPolicy, SearchOptions, SearchType};
 pub use error::{Error, Result};

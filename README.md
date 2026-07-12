@@ -19,6 +19,7 @@ The single library crate uses additive feature flags:
 - `oauth` (default) — Device Flow and token refresh primitives.
 - `credentials` — local profiles, locking and automatic refresh; enables `oauth`.
 - `downloads` — signed audio negotiation and CDN response streams.
+- `lyrics` — signed plain-text and synchronized lyrics retrieval.
 
 ## First login
 
@@ -54,10 +55,23 @@ cargo run -p ym-inspect -- album 1193829
 cargo run -p ym-inspect -- likes --limit 20
 cargo run -p ym-inspect -- playlists
 cargo run -p ym-inspect -- playlist <owner> <kind>
+cargo run -p ym-inspect -- artist <id>
+cargo run -p ym-inspect -- artist-tracks <id> --page-size 100
+cargo run -p ym-inspect -- artist-albums <id> --page-size 100
+cargo run -p ym-inspect -- lyrics <track-id> --lrc
+cargo run -p ym-inspect -- playlist-recommendations <owner> <kind>
+cargo run -p ym-inspect -- stations
+cargo run -p ym-inspect -- station-tracks user onyourwave
 ```
 
 Pass `--json` to print the complete modeled response including fields retained
 for forward compatibility.
+
+Read-only API calls share a configurable `ReadRequestPolicy`: the default
+spaces GET requests by 25 ms and retries connection failures, HTTP 429, and 5xx
+responses up to three times with exponential backoff. POST mutations are never
+retried automatically. Artist tracks and albums expose both explicit
+`PageRequest` methods and helpers that collect every page.
 
 ## Editing the library
 

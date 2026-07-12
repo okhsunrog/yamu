@@ -13,4 +13,4 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-yandex-music-api = { workspace = true, features = ["credentials"] }
+yandex-music-api = { workspace = true, features = ["credentials", "lyrics"] }

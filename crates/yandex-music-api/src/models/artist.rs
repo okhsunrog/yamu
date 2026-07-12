@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::Id;
+use super::{Album, Id, Pager, Track};
 
 /// A compact artist representation embedded in tracks and albums.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -41,5 +41,43 @@ impl Cover {
             .as_deref()
             .or_else(|| self.items_uri.get(index).map(String::as_str))
             .map(|uri| format!("https://{}", uri.replace("%%", size)))
+    }
+}
+
+/// One page of an artist's tracks.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistTracksPage {
+    #[serde(default)]
+    pub tracks: Vec<Track>,
+    pub pager: Option<Pager>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// One page of an artist's albums.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistAlbumsPage {
+    #[serde(default)]
+    pub albums: Vec<Album>,
+    pub pager: Option<Pager>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArtistAlbumSort {
+    #[default]
+    Year,
+    Rating,
+}
+
+impl ArtistAlbumSort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Year => "year",
+            Self::Rating => "rating",
+        }
     }
 }
