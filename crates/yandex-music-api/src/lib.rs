@@ -1,0 +1,12 @@
+//! Unofficial, asynchronous Rust client for the Yandex Music API.
+//!
+//! The API is not publicly documented and can change without notice. This
+//! crate keeps its models forward-compatible by retaining unknown JSON fields.
+
+pub mod auth;
+mod client;
+mod error;
+pub mod models;
+
+pub use client::{Client, ClientBuilder, SearchOptions, SearchType};
+pub use error::{Error, Result};

@@ -1,0 +1,20 @@
+[package]
+name = "yandex-music-credentials"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Local credential storage for ya-music workspace applications"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+yandex-music-api.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
