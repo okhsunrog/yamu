@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use anyhow::{Context, Result};
 use lofty::{
     config::WriteOptions,
-    file::{AudioFile, TaggedFileExt},
+    file::{AudioFile, FileType, TaggedFileExt},
     picture::{MimeType, Picture, PictureType},
     tag::{Accessor, ItemKey, Tag},
 };
@@ -122,6 +122,39 @@ pub async fn write_metadata(
         .context("metadata worker failed")?
 }
 
+pub async fn verify_audio_file(path: &Path, expected_extension: &str) -> Result<()> {
+    let path = path.to_owned();
+    let expected_extension = expected_extension.to_owned();
+    tokio::task::spawn_blocking(move || verify_audio_file_blocking(&path, &expected_extension))
+        .await
+        .context("audio verification worker failed")?
+}
+
+fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<()> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() < 1024 {
+        anyhow::bail!("file is only {} bytes", metadata.len());
+    }
+    let file = lofty::read_from_path(path)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let expected_type = match expected_extension {
+        "flac" => FileType::Flac,
+        "m4a" => FileType::Mp4,
+        "mp3" => FileType::Mpeg,
+        extension => anyhow::bail!("cannot verify unsupported extension .{extension}"),
+    };
+    if file.file_type() != expected_type {
+        anyhow::bail!(
+            "container {:?} does not match .{expected_extension}",
+            file.file_type()
+        );
+    }
+    if file.properties().duration().is_zero() {
+        anyhow::bail!("audio duration is zero");
+    }
+    Ok(())
+}
+
 fn write_metadata_blocking(
     path: &Path,
     metadata: &TrackMetadata,
@@ -187,12 +220,27 @@ fn detect_mime(data: &[u8]) -> MimeType {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_mime;
+    use super::{detect_mime, verify_audio_file};
     use lofty::picture::MimeType;
 
     #[test]
     fn detects_common_artwork_formats() {
         assert_eq!(detect_mime(b"\xff\xd8\xffrest"), MimeType::Jpeg);
         assert_eq!(detect_mime(b"\x89PNG\r\n\x1a\nrest"), MimeType::Png);
+    }
+
+    #[tokio::test]
+    async fn rejects_truncated_audio_file() {
+        let path = std::env::temp_dir().join(format!(
+            "ym-download-invalid-{}-{}.mp3",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, [0_u8; 512]).unwrap();
+
+        let result = verify_audio_file(&path, "mp3").await;
+        let _ = std::fs::remove_file(path);
+
+        assert!(result.is_err());
     }
 }

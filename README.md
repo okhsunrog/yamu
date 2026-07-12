@@ -98,3 +98,9 @@ AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. Existing files are preserved
 unless `--force` is passed. Every completed or existing file is enriched with
 title, artist, album, album artist, year, genre, album track/disc position, and
 an embedded 600×600 front cover.
+
+Resume validates each existing container and its duration before trusting it;
+truncated or corrupt files are atomically replaced. Playlist progress and the
+final per-track result are persisted after every completion in
+`.ym-download-state.json`. Transient negotiation failures and CDN transfers use
+bounded exponential retries, and every advertised CDN URL is attempted.

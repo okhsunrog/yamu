@@ -17,8 +17,10 @@ use yandex_music_api::{
 };
 
 mod metadata;
+mod state;
 
-use metadata::{ArtworkCache, TrackMetadata, write_metadata};
+use metadata::{ArtworkCache, TrackMetadata, verify_audio_file, write_metadata};
+use state::{PlaylistStateStore, StateStatus};
 
 #[derive(Debug, Parser)]
 #[command(about = "Download tracks and playlists from Yandex Music")]
@@ -174,7 +176,20 @@ async fn download_track(
             normalized_extension(&info)
         )),
     };
-    download_normalized(client, &info, &destination, force, true).await?;
+    if tokio::fs::try_exists(&destination).await? && !force {
+        match verify_audio_file(&destination, normalized_extension(&info)).await {
+            Ok(()) => {
+                write_metadata(&destination, &metadata, &artwork).await?;
+                println!("verified existing {}", destination.display());
+                return Ok(());
+            }
+            Err(error) => eprintln!(
+                "existing {} is invalid ({error:#}); replacing it",
+                destination.display()
+            ),
+        }
+    }
+    download_normalized(client, &info, &destination, true, true).await?;
     write_metadata(&destination, &metadata, &artwork).await?;
     println!(
         "saved {} ({} {}, {} kbps)",
@@ -219,8 +234,8 @@ async fn download_playlist(
 
     let semaphore = Arc::new(Semaphore::new(jobs as usize));
     let artwork = ArtworkCache::new()?;
-    let mut tasks = JoinSet::new();
     let total = playlist.tracks.len();
+    let mut jobs_to_run = Vec::with_capacity(total);
     for (index, short) in playlist.tracks.into_iter().enumerate() {
         let track = short
             .track
@@ -260,6 +275,11 @@ async fn download_playlist(
             directory: directory.clone(),
             metadata: TrackMetadata::from_track(track),
         };
+        jobs_to_run.push(job);
+    }
+    let state = PlaylistStateStore::open(&directory, &owner, &kind, &jobs_to_run).await?;
+    let mut tasks = JoinSet::new();
+    for job in jobs_to_run {
         let client = client.clone();
         let uid = uid.clone();
         let semaphore = Arc::clone(&semaphore);
@@ -282,6 +302,9 @@ async fn download_playlist(
                 codec,
             }) => {
                 downloaded += 1;
+                state
+                    .record(outcome.index, StateStatus::Downloaded, Some(&path), None)
+                    .await?;
                 println!(
                     "[{}/{}] downloaded {} ({} {})",
                     outcome.index,
@@ -293,6 +316,9 @@ async fn download_playlist(
             }
             Ok(PlaylistTrackStatus::Skipped { path }) => {
                 skipped += 1;
+                state
+                    .record(outcome.index, StateStatus::Verified, Some(&path), None)
+                    .await?;
                 println!(
                     "[{}/{}] skipped existing {}",
                     outcome.index,
@@ -300,7 +326,27 @@ async fn download_playlist(
                     path.display()
                 );
             }
+            Ok(PlaylistTrackStatus::Repaired { path, reason }) => {
+                downloaded += 1;
+                state
+                    .record(
+                        outcome.index,
+                        StateStatus::Repaired,
+                        Some(&path),
+                        Some(&reason),
+                    )
+                    .await?;
+                println!(
+                    "[{}/{}] repaired {} ({reason})",
+                    outcome.index,
+                    outcome.total,
+                    path.display()
+                );
+            }
             Err(error) => {
+                state
+                    .record(outcome.index, StateStatus::Failed, None, Some(&error))
+                    .await?;
                 eprintln!(
                     "[{}/{}] failed {}: {error}",
                     outcome.index, outcome.total, outcome.label
@@ -350,6 +396,10 @@ enum PlaylistTrackStatus {
     Skipped {
         path: PathBuf,
     },
+    Repaired {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 async fn download_playlist_track(
@@ -366,8 +416,21 @@ async fn download_playlist_track(
             job.directory
                 .join(format!("{}.{}", job.stem, normalized_extension(&info)));
         if tokio::fs::try_exists(&destination).await? && !force {
-            write_metadata(&destination, &job.metadata, artwork).await?;
-            return Ok(PlaylistTrackStatus::Skipped { path: destination });
+            match verify_audio_file(&destination, normalized_extension(&info)).await {
+                Ok(()) => {
+                    write_metadata(&destination, &job.metadata, artwork).await?;
+                    return Ok(PlaylistTrackStatus::Skipped { path: destination });
+                }
+                Err(error) => {
+                    let reason = format!("{error:#}");
+                    download_normalized(client, &info, &destination, true, false).await?;
+                    write_metadata(&destination, &job.metadata, artwork).await?;
+                    return Ok(PlaylistTrackStatus::Repaired {
+                        path: destination,
+                        reason,
+                    });
+                }
+            }
         }
         download_normalized(client, &info, &destination, force, false).await?;
         write_metadata(&destination, &job.metadata, artwork).await?;
@@ -398,7 +461,17 @@ async fn negotiate(
         quality: quality.into(),
         ..DownloadOptions::default()
     };
-    let info = client.download_info(uid, track_id, &options).await?;
+    let mut attempt = 1_u8;
+    let info = loop {
+        match client.download_info(uid.clone(), track_id, &options).await {
+            Ok(info) => break info,
+            Err(error) if attempt < 3 && is_transient_api_error(&error) => {
+                tokio::time::sleep(retry_delay(attempt)).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     if info.decryption_key.is_some() {
         bail!("the server returned encrypted audio for a raw transport request");
     }
@@ -558,9 +631,18 @@ async fn try_download_urls(
 ) -> Result<()> {
     let mut failures = Vec::new();
     for url in &info.urls {
-        match download_url(client, url, temporary, show_progress).await {
-            Ok(()) => return Ok(()),
-            Err(error) => failures.push(error.to_string()),
+        for attempt in 1..=3 {
+            match download_url(client, url, temporary, show_progress).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < 3 && is_transient_download_error(&error) => {
+                    failures.push(format!("attempt {attempt}: {error}"));
+                    tokio::time::sleep(retry_delay(attempt)).await;
+                }
+                Err(error) => {
+                    failures.push(format!("attempt {attempt}: {error}"));
+                    break;
+                }
+            }
         }
     }
     bail!(
@@ -568,6 +650,43 @@ async fn try_download_urls(
         info.urls.len(),
         failures.join("; ")
     )
+}
+
+fn retry_delay(attempt: u8) -> Duration {
+    Duration::from_millis(250 * (1_u64 << (attempt - 1)))
+}
+
+fn is_transient_api_error(error: &yandex_music_api::Error) -> bool {
+    match error {
+        yandex_music_api::Error::Http(error) => {
+            error.is_connect()
+                || error.is_timeout()
+                || error.status().is_some_and(|status| {
+                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                })
+        }
+        yandex_music_api::Error::Api { status, .. } => {
+            *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+        }
+        _ => false,
+    }
+}
+
+fn is_transient_download_error(error: &anyhow::Error) -> bool {
+    if let Some(error) = error.downcast_ref::<yandex_music_api::Error>() {
+        return is_transient_api_error(error);
+    }
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::Interrupted
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::UnexpectedEof
+        )
+    })
 }
 
 async fn download_url(

@@ -2116,6 +2116,8 @@ dependencies = [
  "clap",
  "lofty",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "url",
  "yandex-music-api",
