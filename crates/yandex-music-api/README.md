@@ -12,6 +12,8 @@ An unofficial asynchronous Rust client for the private Yandex Music API.
 - account status
 - batch track lookup
 - album lookup with tracks
+- liked tracks and expansion into full tracks
+- user playlists and playlist contents
 - search
 - forward-compatible models that preserve unknown JSON fields
 

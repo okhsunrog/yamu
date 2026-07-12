@@ -6,6 +6,7 @@ use crate::{Error, Result};
 
 mod account;
 mod albums;
+mod library;
 mod request;
 mod search;
 mod tracks;

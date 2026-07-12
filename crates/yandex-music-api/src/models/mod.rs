@@ -5,6 +5,7 @@ mod album;
 mod artist;
 mod auth;
 mod common;
+mod library;
 mod search;
 mod track;
 
@@ -13,5 +14,6 @@ pub use album::Album;
 pub use artist::{Artist, Cover};
 pub use auth::{DeviceCode, OAuthToken};
 pub use common::Id;
+pub use library::{Pager, Playlist, PlaylistId, TrackShort, TracksList, User};
 pub use search::{SearchPage, SearchResult};
 pub use track::Track;

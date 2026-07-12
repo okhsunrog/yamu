@@ -33,6 +33,9 @@ cargo run -p ym-inspect -- account
 cargo run -p ym-inspect -- search "Boards of Canada"
 cargo run -p ym-inspect -- track 10994777:1193829
 cargo run -p ym-inspect -- album 1193829
+cargo run -p ym-inspect -- likes --limit 20
+cargo run -p ym-inspect -- playlists
+cargo run -p ym-inspect -- playlist <owner> <kind>
 ```
 
 Pass `--json` to print the complete modeled response including fields retained
