@@ -30,7 +30,7 @@ pub use library::{
     PlaylistVisibility, TrackShort, TracksList, User,
 };
 #[cfg(feature = "lyrics")]
-pub use lyrics::{LyricsFormat, LyricsMajor, TrackLyrics};
+pub use lyrics::{LyricsFormat, LyricsMajor, ParseLyricsFormatError, TrackLyrics};
 pub use recommendations::{
     PlaylistRecommendations, Station, StationDashboard, StationId, StationResult, StationSequence,
     StationTracks,

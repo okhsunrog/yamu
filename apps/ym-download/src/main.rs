@@ -13,14 +13,14 @@ use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
-    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, Track},
+    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Track},
     resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
 
 mod metadata;
 mod state;
 
-use metadata::{ArtworkCache, TrackMetadata, verify_audio_file, write_metadata};
+use metadata::{ArtworkCache, EmbeddedLyrics, TrackMetadata, verify_audio_file, write_metadata};
 use state::{CollectionStateStore, StateStatus};
 
 #[derive(Debug, Parser)]
@@ -29,6 +29,10 @@ struct Cli {
     /// Credential profile created by ym-auth.
     #[arg(long, default_value = DEFAULT_PROFILE)]
     profile: String,
+
+    /// Save and embed lyrics; defaults to plain text when no format is given.
+    #[arg(long, global = true, value_name = "FORMAT", num_args = 0..=1, default_missing_value = "text")]
+    lyrics: Option<LyricsFormat>,
 
     #[command(subcommand)]
     command: Command,
@@ -190,6 +194,7 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    let lyrics = cli.lyrics;
     let store = CredentialStore::open_default().context("failed to open credential store")?;
     let auth = DeviceAuth::new().context("failed to create OAuth client")?;
     let resolved = store
@@ -217,14 +222,14 @@ async fn run() -> Result<()> {
             quality,
             output,
             force,
-        } => download_track(&client, uid, &track, quality, output, force).await,
+        } => download_track(&client, uid, &track, quality, output, force, lyrics).await,
         Command::Album {
             album,
             output,
             quality,
             force,
             jobs,
-        } => download_album(&client, uid, &album, quality, output, force, jobs).await,
+        } => download_album(&client, uid, &album, quality, output, force, jobs, lyrics).await,
         Command::Liked {
             output,
             limit,
@@ -241,6 +246,7 @@ async fn run() -> Result<()> {
                 force,
                 jobs,
                 SyncMode::default(),
+                lyrics,
             )
             .await
         }
@@ -251,7 +257,12 @@ async fn run() -> Result<()> {
             quality,
             force,
             jobs,
-        } => download_artist(&client, uid, &artist, quality, output, limit, force, jobs).await,
+        } => {
+            download_artist(
+                &client, uid, &artist, quality, output, limit, force, jobs, lyrics,
+            )
+            .await
+        }
         Command::Playlist {
             playlist,
             output,
@@ -269,6 +280,7 @@ async fn run() -> Result<()> {
                     force,
                     jobs,
                     sync: SyncMode::default(),
+                    lyrics,
                 },
             )
             .await
@@ -292,6 +304,7 @@ async fn run() -> Result<()> {
                         force: false,
                         jobs,
                         sync: SyncMode { dry_run, prune },
+                        lyrics,
                     },
                 )
                 .await
@@ -313,6 +326,7 @@ async fn run() -> Result<()> {
                     false,
                     jobs,
                     SyncMode { dry_run, prune },
+                    lyrics,
                 )
                 .await
             }
@@ -327,6 +341,7 @@ async fn download_track(
     quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
+    lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
     let track_id = track.track_id();
     let track = client
@@ -348,7 +363,15 @@ async fn download_track(
     if tokio::fs::try_exists(&destination).await? && !force {
         match verify_audio_file(&destination, normalized_extension(&info)).await {
             Ok(()) => {
-                write_metadata(&destination, &metadata, &artwork).await?;
+                write_enriched_metadata(
+                    client,
+                    track_id,
+                    &destination,
+                    &metadata,
+                    &artwork,
+                    lyrics,
+                )
+                .await?;
                 println!("verified existing {}", destination.display());
                 return Ok(());
             }
@@ -359,7 +382,7 @@ async fn download_track(
         }
     }
     download_normalized(client, &info, &destination, true, true).await?;
-    write_metadata(&destination, &metadata, &artwork).await?;
+    write_enriched_metadata(client, track_id, &destination, &metadata, &artwork, lyrics).await?;
     println!(
         "saved {} ({} {}, {} kbps)",
         destination.display(),
@@ -370,6 +393,7 @@ async fn download_track(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_album(
     client: &Client,
     uid: Id,
@@ -378,6 +402,7 @@ async fn download_album(
     output: Option<PathBuf>,
     force: bool,
     jobs: u8,
+    lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
     let album = client.album_with_tracks(album_ref.album_id()).await?;
     let directory = output.unwrap_or_else(|| PathBuf::from(album_directory_name(&album)));
@@ -395,6 +420,7 @@ async fn download_album(
         album_ref.album_id(),
         downloads,
         SyncMode::default(),
+        lyrics,
     )
     .await
 }
@@ -409,6 +435,7 @@ async fn download_liked(
     force: bool,
     jobs: u8,
     sync: SyncMode,
+    lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
     let library = client
         .liked_tracks(uid.clone(), 0)
@@ -431,6 +458,7 @@ async fn download_liked(
         &uid.to_string(),
         downloads,
         sync,
+        lyrics,
     )
     .await
 }
@@ -445,6 +473,7 @@ async fn download_artist(
     limit: Option<usize>,
     force: bool,
     jobs: u8,
+    lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
     let artist = client
         .artists([artist_ref.artist_id()])
@@ -474,6 +503,7 @@ async fn download_artist(
         artist_ref.artist_id(),
         downloads,
         SyncMode::default(),
+        lyrics,
     )
     .await
 }
@@ -485,6 +515,7 @@ struct PlaylistDownloadRequest {
     force: bool,
     jobs: u8,
     sync: SyncMode,
+    lyrics: Option<LyricsFormat>,
 }
 
 async fn download_playlist(
@@ -499,6 +530,7 @@ async fn download_playlist(
         force,
         jobs,
         sync,
+        lyrics,
     } = request;
     let owner = playlist.owner().to_owned();
     let kind = playlist.kind().to_owned();
@@ -565,6 +597,7 @@ async fn download_playlist(
         &format!("{owner}:{kind}"),
         jobs_to_run,
         sync,
+        lyrics,
     )
     .await
 }
@@ -581,6 +614,7 @@ async fn download_jobs(
     source_id: &str,
     jobs: Vec<DownloadJob>,
     sync: SyncMode,
+    lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
     let plan = CollectionStateStore::plan(directory, source_kind, source_id, &jobs).await?;
     let untracked = jobs.len().saturating_sub(plan.known_paths);
@@ -617,7 +651,7 @@ async fn download_jobs(
         let artwork = artwork.clone();
         tasks.spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore is open");
-            download_collection_track(&client, uid, quality, force, &artwork, job).await
+            download_collection_track(&client, uid, quality, force, lyrics, &artwork, job).await
         });
     }
 
@@ -750,8 +784,27 @@ async fn prune_tracked_audio(directory: &Path, path: &Path) -> Result<bool> {
             candidate.display()
         );
     }
+    let mut sidecars = Vec::new();
+    for extension in ["lrc", "txt"] {
+        let sidecar = candidate.with_extension(extension);
+        if tokio::fs::try_exists(&sidecar).await? {
+            let sidecar = tokio::fs::canonicalize(sidecar).await?;
+            if !sidecar.starts_with(&root) {
+                bail!(
+                    "refusing to prune lyrics sidecar outside {}: {}",
+                    root.display(),
+                    sidecar.display()
+                );
+            }
+            sidecars.push(sidecar);
+        }
+    }
     tokio::fs::remove_file(&candidate).await?;
     println!("pruned {}", candidate.display());
+    for sidecar in sidecars {
+        tokio::fs::remove_file(&sidecar).await?;
+        println!("pruned {}", sidecar.display());
+    }
     Ok(true)
 }
 
@@ -792,6 +845,7 @@ async fn download_collection_track(
     uid: Id,
     quality: DownloadQuality,
     force: bool,
+    lyrics: Option<LyricsFormat>,
     artwork: &ArtworkCache,
     job: DownloadJob,
 ) -> DownloadOutcome {
@@ -804,13 +858,29 @@ async fn download_collection_track(
         if tokio::fs::try_exists(&destination).await? && !force {
             match verify_audio_file(&destination, normalized_extension(&info)).await {
                 Ok(()) => {
-                    write_metadata(&destination, &job.metadata, artwork).await?;
+                    write_enriched_metadata(
+                        client,
+                        &job.track_id,
+                        &destination,
+                        &job.metadata,
+                        artwork,
+                        lyrics,
+                    )
+                    .await?;
                     return Ok(DownloadStatus::Skipped { path: destination });
                 }
                 Err(error) => {
                     let reason = format!("{error:#}");
                     download_normalized(client, &info, &destination, true, false).await?;
-                    write_metadata(&destination, &job.metadata, artwork).await?;
+                    write_enriched_metadata(
+                        client,
+                        &job.track_id,
+                        &destination,
+                        &job.metadata,
+                        artwork,
+                        lyrics,
+                    )
+                    .await?;
                     return Ok(DownloadStatus::Repaired {
                         path: destination,
                         reason,
@@ -819,7 +889,15 @@ async fn download_collection_track(
             }
         }
         download_normalized(client, &info, &destination, force, false).await?;
-        write_metadata(&destination, &job.metadata, artwork).await?;
+        write_enriched_metadata(
+            client,
+            &job.track_id,
+            &destination,
+            &job.metadata,
+            artwork,
+            lyrics,
+        )
+        .await?;
         Ok(DownloadStatus::Downloaded {
             path: destination,
             quality: info.quality,
@@ -871,6 +949,60 @@ async fn current_account_uid(client: &Client) -> Result<Id> {
         .account
         .and_then(|account| account.uid)
         .context("account status response does not contain a uid")
+}
+
+async fn write_enriched_metadata(
+    client: &Client,
+    track_id: &str,
+    audio_path: &Path,
+    metadata: &TrackMetadata,
+    artwork: &ArtworkCache,
+    lyrics_format: Option<LyricsFormat>,
+) -> Result<()> {
+    let mut metadata = metadata.clone();
+    if let Some(format) = lyrics_format {
+        let fetched = async {
+            let lyrics = client.track_lyrics(track_id, format).await?;
+            client.fetch_lyrics(&lyrics).await
+        }
+        .await;
+        match fetched {
+            Ok(text) => {
+                write_lyrics_sidecar(audio_path, format, &text).await?;
+                metadata.lyrics = Some(EmbeddedLyrics {
+                    text,
+                    synchronized: format == LyricsFormat::Lrc,
+                });
+            }
+            Err(error) => {
+                eprintln!("lyrics unavailable for track {track_id}: {error}");
+            }
+        }
+    }
+    write_metadata(audio_path, &metadata, artwork).await
+}
+
+async fn write_lyrics_sidecar(audio_path: &Path, format: LyricsFormat, text: &str) -> Result<()> {
+    let sidecar = audio_path.with_extension(format.file_extension());
+    let parent = sidecar.parent().unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+    let file_name = sidecar
+        .file_name()
+        .context("lyrics sidecar must contain a file name")?
+        .to_string_lossy();
+    let temporary = parent.join(format!(".{file_name}.part-{}", std::process::id()));
+    let mut file = tokio::fs::File::create(&temporary).await?;
+    file.write_all(text.as_bytes()).await?;
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    #[cfg(windows)]
+    if tokio::fs::try_exists(&sidecar).await? {
+        tokio::fs::remove_file(&sidecar).await?;
+    }
+    tokio::fs::rename(&temporary, &sidecar).await?;
+    println!("saved lyrics {}", sidecar.display());
+    Ok(())
 }
 
 async fn download_to_file(
@@ -1251,6 +1383,7 @@ mod tests {
             track_number: None,
             disc_number: None,
             cover_url: None,
+            lyrics: None,
         };
 
         assert_eq!(
@@ -1323,6 +1456,8 @@ mod tests {
             .unwrap();
         let audio = directory.join("01 - One - First.flac");
         tokio::fs::write(&audio, b"tracked").await.unwrap();
+        let lyrics = audio.with_extension("lrc");
+        tokio::fs::write(&lyrics, b"[00:00]tracked").await.unwrap();
         state
             .record(1, StateStatus::Downloaded, Some(&audio), None)
             .await
@@ -1338,6 +1473,39 @@ mod tests {
                 .unwrap()
         );
         assert!(!tokio::fs::try_exists(&audio).await.unwrap());
+        assert!(!tokio::fs::try_exists(&lyrics).await.unwrap());
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn writes_lyrics_sidecars_with_the_requested_extension() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-lyrics-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("track.flac");
+
+        write_lyrics_sidecar(&audio, LyricsFormat::Lrc, "[00:00]hello")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(directory.join("track.lrc"))
+                .await
+                .unwrap(),
+            "[00:00]hello"
+        );
+        let mut entries = tokio::fs::read_dir(&directory).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name());
+        }
+        assert_eq!(names, [std::ffi::OsString::from("track.lrc")]);
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }

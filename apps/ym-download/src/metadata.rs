@@ -5,7 +5,7 @@ use lofty::{
     config::WriteOptions,
     file::{AudioFile, FileType, TaggedFileExt},
     picture::{MimeType, Picture, PictureType},
-    tag::{Accessor, ItemKey, Tag},
+    tag::{Accessor, ItemKey, Tag, TagType},
 };
 use tokio::sync::Mutex;
 use yandex_music_api::models::{Album, Track};
@@ -21,6 +21,13 @@ pub struct TrackMetadata {
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
     pub cover_url: Option<String>,
+    pub lyrics: Option<EmbeddedLyrics>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmbeddedLyrics {
+    pub text: String,
+    pub synchronized: bool,
 }
 
 impl TrackMetadata {
@@ -60,6 +67,7 @@ impl TrackMetadata {
             cover_url: track
                 .cover_url("600x600")
                 .or_else(|| album.and_then(|album| album.cover_url("600x600"))),
+            lyrics: None,
         }
     }
 
@@ -234,6 +242,16 @@ fn apply_text_metadata(tag: &mut Tag, metadata: &TrackMetadata) {
     if let Some(year) = metadata.year {
         tag.insert_text(ItemKey::RecordingDate, year.to_string());
     }
+    if let Some(lyrics) = &metadata.lyrics {
+        tag.remove_key(ItemKey::Lyrics);
+        tag.remove_key(ItemKey::UnsyncLyrics);
+        let key = if lyrics.synchronized && tag.tag_type() != TagType::Id3v2 {
+            ItemKey::Lyrics
+        } else {
+            ItemKey::UnsyncLyrics
+        };
+        tag.insert_text(key, lyrics.text.clone());
+    }
 }
 
 fn detect_mime(data: &[u8]) -> MimeType {
@@ -248,8 +266,11 @@ fn detect_mime(data: &[u8]) -> MimeType {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_mime, verify_audio_file};
+    use super::{
+        EmbeddedLyrics, TrackMetadata, apply_text_metadata, detect_mime, verify_audio_file,
+    };
     use lofty::picture::MimeType;
+    use lofty::tag::{ItemKey, Tag, TagType};
 
     #[test]
     fn detects_common_artwork_formats() {
@@ -270,5 +291,36 @@ mod tests {
         let _ = std::fs::remove_file(path);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn embeds_plain_and_synchronized_lyrics_with_portable_keys() {
+        let mut metadata = TrackMetadata {
+            title: "Title".to_owned(),
+            artist: "Artist".to_owned(),
+            album: None,
+            album_artist: None,
+            genre: None,
+            year: None,
+            track_number: None,
+            disc_number: None,
+            cover_url: None,
+            lyrics: Some(EmbeddedLyrics {
+                text: "[00:00]line".to_owned(),
+                synchronized: true,
+            }),
+        };
+        let mut vorbis = Tag::new(TagType::VorbisComments);
+        apply_text_metadata(&mut vorbis, &metadata);
+        assert_eq!(vorbis.get_string(ItemKey::Lyrics), Some("[00:00]line"));
+
+        let mut id3 = Tag::new(TagType::Id3v2);
+        apply_text_metadata(&mut id3, &metadata);
+        assert_eq!(id3.get_string(ItemKey::UnsyncLyrics), Some("[00:00]line"));
+
+        metadata.lyrics.as_mut().unwrap().synchronized = false;
+        let mut plain = Tag::new(TagType::VorbisComments);
+        apply_text_metadata(&mut plain, &metadata);
+        assert_eq!(plain.get_string(ItemKey::UnsyncLyrics), Some("[00:00]line"));
     }
 }

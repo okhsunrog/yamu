@@ -136,6 +136,8 @@ cargo run -p ym-download -- artist <artist-id-or-url> --limit 100
 cargo run -p ym-download -- sync playlist <playlist-url> -o ./playlist
 cargo run -p ym-download -- sync liked -o ./liked --dry-run
 cargo run -p ym-download -- sync liked -o ./liked --prune
+cargo run -p ym-download -- track <track-url> --lyrics
+cargo run -p ym-download -- album <album-url> --lyrics lrc
 ```
 
 Track, album, artist, and playlist arguments accept canonical Yandex Music
@@ -156,7 +158,14 @@ versioned local manifest. They download new or renamed entries and retain stale
 files by default. `--dry-run` reports the plan without touching audio or the
 manifest. `--prune` runs only after every current track succeeds and removes
 only previously tracked `.flac`, `.m4a`, or `.mp3` files whose canonical paths
-remain inside the destination directory.
+remain inside the destination directory, together with their generated lyrics
+sidecars.
+
+The global `--lyrics [text|lrc]` option works with every download and sync
+source. Omitting the format after `--lyrics` selects plain text. Lyrics are
+written atomically beside the audio as `.txt` or `.lrc` and embedded in the
+audio tags; synchronized LRC timestamps are retained. Missing remote lyrics
+produce a warning without discarding an otherwise valid audio download.
 
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final

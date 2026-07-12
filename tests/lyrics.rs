@@ -6,6 +6,14 @@ use wiremock::{
 };
 use yandex_music_api::{Client, models::LyricsFormat};
 
+#[test]
+fn parses_lyrics_formats_for_cli_consumers() {
+    assert_eq!("text".parse(), Ok(LyricsFormat::Text));
+    assert_eq!("txt".parse(), Ok(LyricsFormat::Text));
+    assert_eq!("lrc".parse(), Ok(LyricsFormat::Lrc));
+    assert!("karaoke".parse::<LyricsFormat>().is_err());
+}
+
 #[tokio::test]
 async fn fetches_signed_lyrics_metadata_and_text_without_oauth_on_storage() {
     let server = MockServer::start().await;

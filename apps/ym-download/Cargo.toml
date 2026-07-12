@@ -16,4 +16,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync"] }
 url.workspace = true
-yandex-music-api = { workspace = true, features = ["credentials", "downloads"] }
+yandex-music-api = { workspace = true, features = ["credentials", "downloads", "lyrics"] }
