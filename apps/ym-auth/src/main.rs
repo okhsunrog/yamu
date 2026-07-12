@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use yandex_music_api::{Client, auth::DeviceAuth};
-use yandex_music_credentials::{CredentialStore, Credentials, DEFAULT_PROFILE, RefreshPolicy};
+use yandex_music_api::{
+    Client,
+    auth::DeviceAuth,
+    credentials::{CredentialStore, Credentials, DEFAULT_PROFILE, RefreshPolicy},
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage shared Yandex Music credentials")]

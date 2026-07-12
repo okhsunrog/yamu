@@ -1,3 +1,4 @@
+#[cfg(feature = "oauth")]
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -35,6 +36,7 @@ pub enum Error {
     #[error("failed to serialize API request: {0}")]
     SerializeRequest(#[from] serde_json::Error),
 
+    #[cfg(feature = "oauth")]
     #[error(
         "Yandex OAuth error (HTTP {status}): {code}{description}",
         description = description
@@ -49,6 +51,7 @@ pub enum Error {
         body: Option<serde_json::Value>,
     },
 
+    #[cfg(feature = "oauth")]
     #[error("device authorization timed out after {timeout:?}")]
     DeviceAuthorizationTimedOut { timeout: Duration },
 

@@ -40,7 +40,7 @@ pub enum Error {
     MissingRefreshToken(String),
 
     #[error(transparent)]
-    Api(#[from] yandex_music_api::Error),
+    Api(#[from] crate::Error),
 
     #[error("profile lock worker failed: {0}")]
     LockWorker(#[from] tokio::task::JoinError),

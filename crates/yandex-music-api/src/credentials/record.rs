@@ -4,10 +4,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use yandex_music_api::models::OAuthToken;
 use zeroize::Zeroize;
 
-use crate::{Error, Result};
+use crate::models::OAuthToken;
+
+use super::{Error, Result};
 
 pub(crate) const FORMAT_VERSION: u32 = 1;
 

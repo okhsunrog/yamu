@@ -3,6 +3,7 @@
 mod account;
 mod album;
 mod artist;
+#[cfg(feature = "oauth")]
 mod auth;
 mod common;
 mod library;
@@ -12,6 +13,7 @@ mod track;
 pub use account::{Account, AccountStatus};
 pub use album::Album;
 pub use artist::{Artist, Cover};
+#[cfg(feature = "oauth")]
 pub use auth::{DeviceCode, OAuthToken};
 pub use common::Id;
 pub use library::{

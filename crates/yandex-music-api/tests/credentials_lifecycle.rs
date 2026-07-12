@@ -1,11 +1,16 @@
+#![cfg(feature = "credentials")]
+
 use std::{fs, path::PathBuf};
 
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string, method, path},
 };
-use yandex_music_api::{auth::DeviceAuth, models::OAuthToken};
-use yandex_music_credentials::{CredentialStore, Credentials, RefreshPolicy};
+use yandex_music_api::{
+    auth::DeviceAuth,
+    credentials::{CredentialStore, Credentials, RefreshPolicy},
+    models::OAuthToken,
+};
 
 struct TestDirectory(PathBuf);
 

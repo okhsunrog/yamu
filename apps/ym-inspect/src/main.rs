@@ -6,9 +6,9 @@ use serde::Serialize;
 use yandex_music_api::{
     Client,
     auth::DeviceAuth,
+    credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
     models::{Album, Id, Playlist, SearchResult, Track},
 };
-use yandex_music_credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy};
 
 #[derive(Debug, Parser)]
 #[command(about = "Read-only Yandex Music API inspection client")]

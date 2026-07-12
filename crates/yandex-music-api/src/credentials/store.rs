@@ -7,7 +7,7 @@ use std::{
 
 use directories::ProjectDirs;
 
-use crate::{Credentials, Error, Result};
+use super::{Credentials, Error, Result};
 
 pub const DEFAULT_PROFILE: &str = "default";
 pub const TOKEN_ENV: &str = "YANDEX_MUSIC_TOKEN";

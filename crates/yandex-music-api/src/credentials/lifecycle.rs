@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use yandex_music_api::auth::DeviceAuth;
+use crate::auth::DeviceAuth;
 
-use crate::{CredentialStore, Credentials, Error, Result, TOKEN_ENV};
+use super::{CredentialStore, Credentials, Error, ProfileLock, Result, TOKEN_ENV};
 
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const DEFAULT_EXPIRY_MARGIN: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -111,7 +111,7 @@ impl CredentialStore {
         Ok((refreshed, true))
     }
 
-    async fn lock_profile_async(&self, profile: &str) -> Result<crate::ProfileLock> {
+    async fn lock_profile_async(&self, profile: &str) -> Result<ProfileLock> {
         let store = self.clone();
         let profile = profile.to_owned();
         tokio::task::spawn_blocking(move || store.lock_profile(&profile)).await?

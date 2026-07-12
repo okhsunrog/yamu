@@ -5,7 +5,7 @@ Rust libraries and development tools for the unofficial Yandex Music API.
 ## Packages
 
 - `yandex-music-api` — async API client, models and OAuth Device Flow.
-- `yandex-music-credentials` — shared local credential storage for workspace applications.
+- `yandex-music-api`'s `credentials` feature — shared local credential storage for workspace applications.
 - `ym-auth` — login, logout and credential inspection tool.
 - `ym-inspect` — read-only API exploration client.
 - `ym-edit` — explicit liked-track and playlist mutation client.

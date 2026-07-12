@@ -5,7 +5,6 @@ members = [
     "apps/ym-edit",
     "apps/ym-inspect",
     "crates/yandex-music-api",
-    "crates/yandex-music-credentials",
 ]
 
 [workspace.package]
@@ -29,4 +28,3 @@ wiremock = "0.6"
 zeroize = "1"
 
 yandex-music-api = { path = "crates/yandex-music-api" }
-yandex-music-credentials = { path = "crates/yandex-music-credentials" }

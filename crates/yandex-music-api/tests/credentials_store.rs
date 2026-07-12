@@ -1,6 +1,8 @@
+#![cfg(feature = "credentials")]
+
 use std::fs;
 
-use yandex_music_credentials::{CredentialStore, Credentials, Error};
+use yandex_music_api::credentials::{CredentialStore, Credentials, Error};
 
 struct TestDirectory(std::path::PathBuf);
 

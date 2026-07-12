@@ -6,9 +6,9 @@ use serde::Serialize;
 use yandex_music_api::{
     Client,
     auth::DeviceAuth,
+    credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
     models::{Id, Playlist, PlaylistDiff, PlaylistTrackId, PlaylistVisibility},
 };
-use yandex_music_credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy};
 
 #[derive(Debug, Parser)]
 #[command(about = "Explicit mutation client for Yandex Music")]

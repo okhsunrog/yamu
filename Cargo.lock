@@ -1865,6 +1865,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 name = "yandex-music-api"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "reqwest",
  "serde",
  "serde_json",
@@ -1873,20 +1874,6 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
-]
-
-[[package]]
-name = "yandex-music-credentials"
-version = "0.1.0"
-dependencies = [
- "directories",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "uuid",
- "wiremock",
- "yandex-music-api",
  "zeroize",
 ]
 
@@ -1898,7 +1885,6 @@ dependencies = [
  "clap",
  "tokio",
  "yandex-music-api",
- "yandex-music-credentials",
 ]
 
 [[package]]
@@ -1911,7 +1897,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "yandex-music-api",
- "yandex-music-credentials",
 ]
 
 [[package]]
@@ -1924,7 +1909,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "yandex-music-api",
- "yandex-music-credentials",
 ]
 
 [[package]]

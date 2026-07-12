@@ -9,15 +9,23 @@ repository.workspace = true
 keywords = ["yandex", "music", "api", "async"]
 categories = ["api-bindings", "multimedia"]
 
+[features]
+default = ["oauth"]
+oauth = ["dep:uuid"]
+credentials = ["oauth", "dep:directories", "dep:zeroize", "tokio/rt"]
+
 [dependencies]
+directories = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 url.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid.workspace = true
 wiremock.workspace = true
