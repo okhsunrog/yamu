@@ -133,6 +133,9 @@ cargo run -p ym-download -- playlist <owner>:<kind> -o ./playlist --jobs 4
 cargo run -p ym-download -- playlist <yandex-music-playlist-url>
 cargo run -p ym-download -- liked -o ./liked --jobs 4
 cargo run -p ym-download -- artist <artist-id-or-url> --limit 100
+cargo run -p ym-download -- sync playlist <playlist-url> -o ./playlist
+cargo run -p ym-download -- sync liked -o ./liked --dry-run
+cargo run -p ym-download -- sync liked -o ./liked --prune
 ```
 
 Track, album, artist, and playlist arguments accept canonical Yandex Music
@@ -147,6 +150,13 @@ resume pipeline.
 Liked libraries are expanded in bounded API batches before downloading. Artist
 catalogs are fetched through every available API page. Both commands accept an
 optional `--limit` and preserve their source ordering in numbered filenames.
+
+`sync playlist` and `sync liked` compare the current remote ordering with the
+versioned local manifest. They download new or renamed entries and retain stale
+files by default. `--dry-run` reports the plan without touching audio or the
+manifest. `--prune` runs only after every current track succeeds and removes
+only previously tracked `.flac`, `.m4a`, or `.mp3` files whose canonical paths
+remain inside the destination directory.
 
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final

@@ -11,14 +11,21 @@ use tokio::{io::AsyncWriteExt, sync::Mutex};
 
 use crate::DownloadJob;
 
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = ".ym-download-state.json";
 
 #[derive(Clone)]
 pub struct CollectionStateStore {
+    directory: PathBuf,
     path: PathBuf,
     state: Arc<Mutex<CollectionState>>,
     write_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Debug, Default)]
+pub struct CollectionPlan {
+    pub known_paths: usize,
+    pub stale_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -44,12 +51,47 @@ struct CollectionState {
 struct StateEntry {
     track_id: String,
     label: String,
+    desired_stem: PathBuf,
     status: StateStatus,
     path: Option<PathBuf>,
     error: Option<String>,
 }
 
 impl CollectionStateStore {
+    pub async fn plan(
+        directory: &Path,
+        source_kind: &str,
+        source_id: &str,
+        jobs: &[DownloadJob],
+    ) -> Result<CollectionPlan> {
+        let old_entries = load_entries(directory, source_kind, source_id).await?;
+        let desired = jobs
+            .iter()
+            .map(|job| (job.track_id.as_str(), desired_stem(directory, job)))
+            .collect::<Vec<_>>();
+        let known_paths = old_entries
+            .values()
+            .filter(|entry| {
+                desired.iter().any(|(track_id, stem)| {
+                    entry.track_id == *track_id && entry.desired_stem == *stem
+                }) && entry.path.is_some()
+            })
+            .count();
+        let stale_paths = old_entries
+            .values()
+            .filter(|entry| {
+                !desired.iter().any(|(track_id, stem)| {
+                    entry.track_id == *track_id && entry.desired_stem == *stem
+                })
+            })
+            .filter_map(|entry| entry.path.clone())
+            .collect();
+        Ok(CollectionPlan {
+            known_paths,
+            stale_paths,
+        })
+    }
+
     pub async fn open(
         directory: &Path,
         source_kind: &str,
@@ -57,28 +99,20 @@ impl CollectionStateStore {
         jobs: &[DownloadJob],
     ) -> Result<Self> {
         let path = directory.join(STATE_FILE);
-        let old = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice::<CollectionState>(&bytes).ok(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        let old_entries = old
-            .filter(|state| {
-                state.version == STATE_VERSION
-                    && state.source_kind == source_kind
-                    && state.source_id == source_id
-            })
-            .map(|state| state.entries)
-            .unwrap_or_default();
+        let old_entries = load_entries(directory, source_kind, source_id).await?;
         let entries = jobs
             .iter()
             .map(|job| {
-                let old = old_entries.get(&job.index);
+                let stem = desired_stem(directory, job);
+                let old = old_entries
+                    .values()
+                    .find(|entry| entry.track_id == job.track_id && entry.desired_stem == stem);
                 (
                     job.index,
                     StateEntry {
                         track_id: job.track_id.clone(),
                         label: job.label.clone(),
+                        desired_stem: stem,
                         status: StateStatus::Pending,
                         path: old.and_then(|entry| entry.path.clone()),
                         error: None,
@@ -87,6 +121,7 @@ impl CollectionStateStore {
             })
             .collect();
         let store = Self {
+            directory: directory.to_owned(),
             path,
             state: Arc::new(Mutex::new(CollectionState {
                 version: STATE_VERSION,
@@ -116,7 +151,11 @@ impl CollectionStateStore {
                 .get_mut(&index)
                 .context("state entry is missing")?;
             entry.status = status;
-            entry.path = path.map(Path::to_owned);
+            entry.path = path.map(|path| {
+                path.strip_prefix(&self.directory)
+                    .unwrap_or(path)
+                    .to_owned()
+            });
             entry.error = error.map(str::to_owned);
         }
         self.save().await
@@ -144,6 +183,34 @@ impl CollectionStateStore {
         tokio::fs::rename(&temporary, &self.path).await?;
         Ok(())
     }
+}
+
+async fn load_entries(
+    directory: &Path,
+    source_kind: &str,
+    source_id: &str,
+) -> Result<BTreeMap<usize, StateEntry>> {
+    let path = directory.join(STATE_FILE);
+    let old = match tokio::fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice::<CollectionState>(&bytes).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    Ok(old
+        .filter(|state| {
+            state.version == STATE_VERSION
+                && state.source_kind == source_kind
+                && state.source_id == source_id
+        })
+        .map(|state| state.entries)
+        .unwrap_or_default())
+}
+
+fn desired_stem(directory: &Path, job: &DownloadJob) -> PathBuf {
+    job.directory
+        .strip_prefix(directory)
+        .unwrap_or_else(|_| Path::new(""))
+        .join(&job.stem)
 }
 
 fn unix_timestamp() -> Result<u64> {

@@ -122,6 +122,62 @@ enum Command {
         #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
         jobs: u8,
     },
+    /// Incrementally synchronize a changing collection.
+    Sync {
+        #[command(subcommand)]
+        source: SyncCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SyncCommand {
+    /// Synchronize a playlist with its current remote contents.
+    Playlist {
+        /// Playlist as owner:kind or a Yandex Music playlist URL.
+        playlist: PlaylistRef,
+        /// Destination directory; defaults to a sanitized playlist title.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
+        /// Maximum number of simultaneous track downloads.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+        jobs: u8,
+        /// Show planned changes without writing files or the manifest.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove previously tracked audio files no longer present remotely.
+        #[arg(long)]
+        prune: bool,
+    },
+    /// Synchronize tracks liked by the current account.
+    Liked {
+        /// Destination directory.
+        #[arg(short, long, default_value = "Liked tracks")]
+        output: PathBuf,
+        /// Download at most this many tracks.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
+        /// Maximum number of simultaneous track downloads.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+        jobs: u8,
+        /// Show planned changes without writing files or the manifest.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove previously tracked audio files no longer present remotely.
+        #[arg(long)]
+        prune: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SyncMode {
+    dry_run: bool,
+    prune: bool,
 }
 
 #[tokio::main]
@@ -175,7 +231,19 @@ async fn run() -> Result<()> {
             quality,
             force,
             jobs,
-        } => download_liked(&client, uid, quality, output, limit, force, jobs).await,
+        } => {
+            download_liked(
+                &client,
+                uid,
+                quality,
+                output,
+                limit,
+                force,
+                jobs,
+                SyncMode::default(),
+            )
+            .await
+        }
         Command::Artist {
             artist,
             output,
@@ -200,10 +268,55 @@ async fn run() -> Result<()> {
                     output,
                     force,
                     jobs,
+                    sync: SyncMode::default(),
                 },
             )
             .await
         }
+        Command::Sync { source } => match source {
+            SyncCommand::Playlist {
+                playlist,
+                output,
+                quality,
+                jobs,
+                dry_run,
+                prune,
+            } => {
+                download_playlist(
+                    &client,
+                    uid,
+                    PlaylistDownloadRequest {
+                        playlist,
+                        quality,
+                        output,
+                        force: false,
+                        jobs,
+                        sync: SyncMode { dry_run, prune },
+                    },
+                )
+                .await
+            }
+            SyncCommand::Liked {
+                output,
+                limit,
+                quality,
+                jobs,
+                dry_run,
+                prune,
+            } => {
+                download_liked(
+                    &client,
+                    uid,
+                    quality,
+                    output,
+                    limit,
+                    false,
+                    jobs,
+                    SyncMode { dry_run, prune },
+                )
+                .await
+            }
+        },
     }
 }
 
@@ -281,6 +394,7 @@ async fn download_album(
         "album",
         album_ref.album_id(),
         downloads,
+        SyncMode::default(),
     )
     .await
 }
@@ -294,6 +408,7 @@ async fn download_liked(
     limit: Option<usize>,
     force: bool,
     jobs: u8,
+    sync: SyncMode,
 ) -> Result<()> {
     let library = client
         .liked_tracks(uid.clone(), 0)
@@ -315,6 +430,7 @@ async fn download_liked(
         "liked",
         &uid.to_string(),
         downloads,
+        sync,
     )
     .await
 }
@@ -357,6 +473,7 @@ async fn download_artist(
         "artist",
         artist_ref.artist_id(),
         downloads,
+        SyncMode::default(),
     )
     .await
 }
@@ -367,6 +484,7 @@ struct PlaylistDownloadRequest {
     output: Option<PathBuf>,
     force: bool,
     jobs: u8,
+    sync: SyncMode,
 }
 
 async fn download_playlist(
@@ -380,6 +498,7 @@ async fn download_playlist(
         output,
         force,
         jobs,
+        sync,
     } = request;
     let owner = playlist.owner().to_owned();
     let kind = playlist.kind().to_owned();
@@ -445,6 +564,7 @@ async fn download_playlist(
         "playlist",
         &format!("{owner}:{kind}"),
         jobs_to_run,
+        sync,
     )
     .await
 }
@@ -460,7 +580,32 @@ async fn download_jobs(
     source_kind: &str,
     source_id: &str,
     jobs: Vec<DownloadJob>,
+    sync: SyncMode,
 ) -> Result<()> {
+    let plan = CollectionStateStore::plan(directory, source_kind, source_id, &jobs).await?;
+    let untracked = jobs.len().saturating_sub(plan.known_paths);
+    if sync.dry_run {
+        println!(
+            "sync plan: {} tracks, {} manifest-known, {} new or changed, {} stale",
+            jobs.len(),
+            plan.known_paths,
+            untracked,
+            plan.stale_paths.len()
+        );
+        for path in &plan.stale_paths {
+            println!(
+                "{} stale {}",
+                if sync.prune {
+                    "would prune"
+                } else {
+                    "would keep"
+                },
+                tracked_path(directory, path).display()
+            );
+        }
+        return Ok(());
+    }
+    let stale_paths = plan.stale_paths;
     let state = CollectionStateStore::open(directory, source_kind, source_id, &jobs).await?;
     let semaphore = Arc::new(Semaphore::new(concurrency as usize));
     let artwork = ArtworkCache::new()?;
@@ -556,7 +701,58 @@ async fn download_jobs(
     if !failures.is_empty() {
         bail!("collection completed with {} failed tracks", failures.len());
     }
+    if sync.prune {
+        let mut pruned = 0;
+        for path in stale_paths {
+            if prune_tracked_audio(directory, &path).await? {
+                pruned += 1;
+            }
+        }
+        println!("sync prune: {pruned} stale files removed");
+    } else if !stale_paths.is_empty() {
+        println!(
+            "sync kept {} stale tracked files; pass --prune to remove them",
+            stale_paths.len()
+        );
+    }
     Ok(())
+}
+
+fn tracked_path(directory: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        directory.join(path)
+    }
+}
+
+async fn prune_tracked_audio(directory: &Path, path: &Path) -> Result<bool> {
+    let candidate = tracked_path(directory, path);
+    if !tokio::fs::try_exists(&candidate).await? {
+        return Ok(false);
+    }
+    let root = tokio::fs::canonicalize(directory).await?;
+    let candidate = tokio::fs::canonicalize(&candidate).await?;
+    if !candidate.starts_with(&root) {
+        bail!(
+            "refusing to prune tracked path outside {}: {}",
+            root.display(),
+            candidate.display()
+        );
+    }
+    let supported_audio = candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "flac" | "m4a" | "mp3"));
+    if !supported_audio {
+        bail!(
+            "refusing to prune non-audio tracked path {}",
+            candidate.display()
+        );
+    }
+    tokio::fs::remove_file(&candidate).await?;
+    println!("pruned {}", candidate.display());
+    Ok(true)
 }
 
 struct DownloadJob {
@@ -1039,6 +1235,8 @@ fn default_track_filename(metadata: &TrackMetadata, extension: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -1102,5 +1300,45 @@ mod tests {
         assert_eq!(jobs[0].stem, "01 - One - First");
         assert_eq!(jobs[1].stem, "02 - Two - Second");
         assert_eq!(jobs[1].track_id, "12");
+    }
+
+    #[tokio::test]
+    async fn manifest_detects_and_safely_prunes_stale_audio() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-sync-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let tracks = serde_json::from_value::<Vec<Track>>(serde_json::json!([
+            {"id": 11, "title": "First", "artists": [{"id": 1, "name": "One"}]}
+        ]))
+        .unwrap();
+        let jobs = ordered_track_jobs(&tracks, &directory);
+        let state = CollectionStateStore::open(&directory, "liked", "42", &jobs)
+            .await
+            .unwrap();
+        let audio = directory.join("01 - One - First.flac");
+        tokio::fs::write(&audio, b"tracked").await.unwrap();
+        state
+            .record(1, StateStatus::Downloaded, Some(&audio), None)
+            .await
+            .unwrap();
+
+        let plan = CollectionStateStore::plan(&directory, "liked", "42", &[])
+            .await
+            .unwrap();
+        assert_eq!(plan.stale_paths, [PathBuf::from("01 - One - First.flac")]);
+        assert!(
+            prune_tracked_audio(&directory, &plan.stale_paths[0])
+                .await
+                .unwrap()
+        );
+        assert!(!tokio::fs::try_exists(&audio).await.unwrap());
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }
