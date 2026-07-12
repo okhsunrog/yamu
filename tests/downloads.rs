@@ -9,6 +9,16 @@ use yandex_music_api::{
     models::{AudioCodec, DownloadOptions, DownloadQuality},
 };
 
+#[test]
+fn parses_download_quality_names_and_protocol_values() {
+    assert_eq!("low".parse(), Ok(DownloadQuality::Low));
+    assert_eq!("lq".parse(), Ok(DownloadQuality::Low));
+    assert_eq!("normal".parse(), Ok(DownloadQuality::Normal));
+    assert_eq!("nq".parse(), Ok(DownloadQuality::Normal));
+    assert_eq!("lossless".parse(), Ok(DownloadQuality::Lossless));
+    assert!("studio".parse::<DownloadQuality>().is_err());
+}
+
 fn client_for(server: &MockServer) -> Client {
     Client::builder()
         .base_url(server.uri())

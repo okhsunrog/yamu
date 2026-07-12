@@ -22,7 +22,9 @@ pub use artist::{Artist, ArtistAlbumSort, ArtistAlbumsPage, ArtistTracksPage, Co
 pub use auth::{DeviceCode, OAuthToken};
 pub use common::{Id, PageRequest};
 #[cfg(feature = "downloads")]
-pub use download::{AudioCodec, DownloadInfo, DownloadOptions, DownloadQuality};
+pub use download::{
+    AudioCodec, DownloadInfo, DownloadOptions, DownloadQuality, ParseDownloadQualityError,
+};
 pub use library::{
     LibraryRevision, Pager, Playlist, PlaylistDiff, PlaylistId, PlaylistOperation, PlaylistTrackId,
     PlaylistVisibility, TrackShort, TracksList, User,

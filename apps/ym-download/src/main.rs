@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use tokio::io::AsyncWriteExt;
 use tokio::{process::Command as TokioCommand, sync::Semaphore, task::JoinSet};
 use yandex_music_api::{
@@ -40,8 +40,8 @@ enum Command {
         /// Numeric Yandex Music track ID.
         track_id: String,
         /// Highest requested quality; the server may return a lower tier.
-        #[arg(long, value_enum, default_value_t = Quality::Lossless)]
-        quality: Quality,
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
         /// Destination path; defaults to `track-id.negotiated-extension`.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -59,8 +59,8 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Highest requested quality; the server may return a lower tier.
-        #[arg(long, value_enum, default_value_t = Quality::Lossless)]
-        quality: Quality,
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
         /// Replace existing destination files.
         #[arg(long)]
         force: bool,
@@ -68,24 +68,6 @@ enum Command {
         #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
         jobs: u8,
     },
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum Quality {
-    Low,
-    Normal,
-    #[default]
-    Lossless,
-}
-
-impl From<Quality> for DownloadQuality {
-    fn from(value: Quality) -> Self {
-        match value {
-            Quality::Low => Self::Low,
-            Quality::Normal => Self::Normal,
-            Quality::Lossless => Self::Lossless,
-        }
-    }
 }
 
 #[tokio::main]
@@ -155,7 +137,7 @@ async fn download_track(
     client: &Client,
     uid: Id,
     track_id: &str,
-    quality: Quality,
+    quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
 ) -> Result<()> {
@@ -204,7 +186,7 @@ async fn download_track(
 struct PlaylistDownloadRequest {
     owner: String,
     kind: String,
-    quality: Quality,
+    quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
     jobs: u8,
@@ -405,7 +387,7 @@ enum PlaylistTrackStatus {
 async fn download_playlist_track(
     client: &Client,
     uid: Id,
-    quality: Quality,
+    quality: DownloadQuality,
     force: bool,
     artwork: &ArtworkCache,
     job: PlaylistJob,
@@ -455,10 +437,10 @@ async fn negotiate(
     client: &Client,
     uid: Id,
     track_id: &str,
-    quality: Quality,
+    quality: DownloadQuality,
 ) -> Result<DownloadInfo> {
     let options = DownloadOptions {
-        quality: quality.into(),
+        quality,
         ..DownloadOptions::default()
     };
     let mut attempt = 1_u8;

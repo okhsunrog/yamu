@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
+use thiserror::Error;
 use url::Url;
 
 /// Requested audio quality. The server may return a lower available quality.
@@ -28,6 +29,24 @@ impl fmt::Display for DownloadQuality {
         f.write_str(self.as_str())
     }
 }
+
+impl FromStr for DownloadQuality {
+    type Err = ParseDownloadQualityError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "low" | "lq" => Ok(Self::Low),
+            "normal" | "nq" => Ok(Self::Normal),
+            "lossless" => Ok(Self::Lossless),
+            _ => Err(ParseDownloadQualityError(value.to_owned())),
+        }
+    }
+}
+
+/// Error returned when parsing an unsupported requested audio quality.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("unsupported download quality {0:?}; expected low, normal, or lossless")]
+pub struct ParseDownloadQualityError(String);
 
 /// Audio codec/container identifier understood by the file-info endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
