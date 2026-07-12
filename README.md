@@ -21,6 +21,31 @@ The single library crate uses additive feature flags:
 - `downloads` — signed audio negotiation and CDN response streams.
 - `lyrics` — signed plain-text and synchronized lyrics retrieval.
 
+The API is private and may change without notice, so the library is currently
+experimental. A minimal direct client looks like this:
+
+```rust,no_run
+use yandex_music_api::Client;
+
+#[tokio::main]
+async fn main() -> yandex_music_api::Result<()> {
+    let token = std::env::var("YANDEX_MUSIC_TOKEN").expect("token is set");
+    let client = Client::new(token)?;
+
+    let results = client.search("Boards of Canada").await?;
+    if let Some(tracks) = results.tracks {
+        for track in tracks.results {
+            println!("{}", track.title.unwrap_or_default());
+        }
+    }
+
+    Ok(())
+}
+```
+
+The protocol-research repositories live in the ignored `references/`
+directory.
+
 ## First login
 
 ```console
