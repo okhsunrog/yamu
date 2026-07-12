@@ -87,9 +87,12 @@ opens short-lived CDN response streams without forwarding the OAuth token:
 ```console
 cargo run -p ym-download -- track <track-id>
 cargo run -p ym-download -- track <track-id> --quality normal -o track.mp3
-cargo run -p ym-download -- playlist <owner> <kind> -o ./playlist
+cargo run -p ym-download -- playlist <owner> <kind> -o ./playlist --jobs 4
 ```
 
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final
-path. Existing files are preserved unless `--force` is passed.
+path. Playlist downloads continue past individual failures and print a final
+report. FLAC-in-MP4 is losslessly remuxed to native `.flac` through `ffmpeg`;
+AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. Existing files are preserved
+unless `--force` is passed.
