@@ -16,6 +16,10 @@ use yandex_music_api::{
     models::{DownloadInfo, DownloadOptions, DownloadQuality, Id},
 };
 
+mod metadata;
+
+use metadata::{ArtworkCache, TrackMetadata, write_metadata};
+
 #[derive(Debug, Parser)]
 #[command(about = "Download tracks and playlists from Yandex Music")]
 struct Cli {
@@ -153,6 +157,14 @@ async fn download_track(
     output: Option<PathBuf>,
     force: bool,
 ) -> Result<()> {
+    let track = client
+        .tracks([track_id])
+        .await?
+        .into_iter()
+        .next()
+        .context("track metadata was not returned")?;
+    let metadata = TrackMetadata::from_track(&track);
+    let artwork = ArtworkCache::new()?;
     let info = negotiate(client, uid, track_id, quality).await?;
     let destination = match output {
         Some(path) => validate_output_extension(path, &info)?,
@@ -163,6 +175,7 @@ async fn download_track(
         )),
     };
     download_normalized(client, &info, &destination, force, true).await?;
+    write_metadata(&destination, &metadata, &artwork).await?;
     println!(
         "saved {} ({} {}, {} kbps)",
         destination.display(),
@@ -205,6 +218,7 @@ async fn download_playlist(
     let width = playlist.tracks.len().to_string().len().max(2);
 
     let semaphore = Arc::new(Semaphore::new(jobs as usize));
+    let artwork = ArtworkCache::new()?;
     let mut tasks = JoinSet::new();
     let total = playlist.tracks.len();
     for (index, short) in playlist.tracks.into_iter().enumerate() {
@@ -244,13 +258,15 @@ async fn download_playlist(
             ),
             stem,
             directory: directory.clone(),
+            metadata: TrackMetadata::from_track(track),
         };
         let client = client.clone();
         let uid = uid.clone();
         let semaphore = Arc::clone(&semaphore);
+        let artwork = artwork.clone();
         tasks.spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore is open");
-            download_playlist_track(&client, uid, quality, force, job).await
+            download_playlist_track(&client, uid, quality, force, &artwork, job).await
         });
     }
 
@@ -315,6 +331,7 @@ struct PlaylistJob {
     label: String,
     stem: String,
     directory: PathBuf,
+    metadata: TrackMetadata,
 }
 
 struct PlaylistOutcome {
@@ -340,6 +357,7 @@ async fn download_playlist_track(
     uid: Id,
     quality: Quality,
     force: bool,
+    artwork: &ArtworkCache,
     job: PlaylistJob,
 ) -> PlaylistOutcome {
     let result = async {
@@ -348,9 +366,11 @@ async fn download_playlist_track(
             job.directory
                 .join(format!("{}.{}", job.stem, normalized_extension(&info)));
         if tokio::fs::try_exists(&destination).await? && !force {
+            write_metadata(&destination, &job.metadata, artwork).await?;
             return Ok(PlaylistTrackStatus::Skipped { path: destination });
         }
         download_normalized(client, &info, &destination, force, false).await?;
+        write_metadata(&destination, &job.metadata, artwork).await?;
         Ok(PlaylistTrackStatus::Downloaded {
             path: destination,
             quality: info.quality,

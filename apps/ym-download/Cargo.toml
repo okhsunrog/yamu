@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+lofty.workspace = true
+reqwest.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync"] }
 url.workspace = true
 yandex-music-api = { workspace = true, features = ["credentials", "downloads"] }

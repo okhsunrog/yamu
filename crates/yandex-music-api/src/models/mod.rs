@@ -13,7 +13,7 @@ mod search;
 mod track;
 
 pub use account::{Account, AccountStatus};
-pub use album::Album;
+pub use album::{Album, TrackPosition};
 pub use artist::{Artist, Cover};
 #[cfg(feature = "oauth")]
 pub use auth::{DeviceCode, OAuthToken};

@@ -5,6 +5,14 @@ use serde_json::Value;
 
 use super::{Artist, Id, Track};
 
+/// Position of a track within an album volume.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackPosition {
+    pub index: Option<u32>,
+    pub volume: Option<u32>,
+}
+
 /// A Yandex Music album, optionally including tracks grouped by volume.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +31,7 @@ pub struct Album {
     pub kind: Option<String>,
     pub duration_ms: Option<u64>,
     pub explicit: Option<bool>,
+    pub track_position: Option<TrackPosition>,
     pub volumes: Option<Vec<Vec<Track>>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
