@@ -151,6 +151,13 @@ pub async fn write_metadata(
     artwork: &ArtworkCache,
 ) -> Result<()> {
     let picture = artwork.get(metadata.cover_url.as_deref()).await?;
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    {
+        return write_mp4_metadata(path, metadata, picture).await;
+    }
     let path = path.to_owned();
     let metadata = metadata.clone();
     tokio::task::spawn_blocking(move || write_metadata_blocking(&path, &metadata, picture))
@@ -161,9 +168,35 @@ pub async fn write_metadata(
 pub async fn verify_audio_file(path: &Path, expected_extension: &str) -> Result<()> {
     let path = path.to_owned();
     let expected_extension = expected_extension.to_owned();
-    tokio::task::spawn_blocking(move || verify_audio_file_blocking(&path, &expected_extension))
+    let blocking_path = path.clone();
+    let blocking_extension = expected_extension.clone();
+    tokio::task::spawn_blocking(move || {
+        verify_audio_file_blocking(&blocking_path, &blocking_extension)
+    })
+    .await
+    .context("audio verification worker failed")??;
+    if expected_extension == "m4a" {
+        verify_mp4_audio_decode(&path).await?;
+    }
+    Ok(())
+}
+
+async fn verify_mp4_audio_decode(path: &Path) -> Result<()> {
+    let output = tokio::process::Command::new("ffmpeg")
+        .arg("-nostdin")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-map", "0:a:0", "-f", "null", "-"])
+        .output()
         .await
-        .context("audio verification worker failed")?
+        .context("failed to run ffmpeg while validating M4A audio")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "M4A audio decode failed: {}",
+            summarize_ffmpeg_error(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<()> {
@@ -189,6 +222,113 @@ fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<(
         anyhow::bail!("audio duration is zero");
     }
     Ok(())
+}
+
+async fn write_mp4_metadata(
+    path: &Path,
+    metadata: &TrackMetadata,
+    picture: Option<Vec<u8>>,
+) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .context("M4A path must contain a file name")?
+        .to_string_lossy();
+    let output_path = parent.join(format!(".{file_name}.metadata-{}.m4a", std::process::id()));
+    let picture_path = picture.as_ref().map(|picture| {
+        let extension = match detect_mime(picture) {
+            MimeType::Png => "png",
+            _ => "jpg",
+        };
+        parent.join(format!(
+            ".{file_name}.cover-{}.{extension}",
+            std::process::id()
+        ))
+    });
+    if let (Some(picture_path), Some(picture)) = (&picture_path, &picture) {
+        tokio::fs::write(picture_path, picture).await?;
+    }
+
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command
+        .arg("-nostdin")
+        .arg("-y")
+        .args(["-v", "error", "-i"])
+        .arg(path);
+    if let Some(picture_path) = &picture_path {
+        command.arg("-i").arg(picture_path);
+    }
+    command.args(["-map", "0:a:0", "-map_metadata", "-1", "-c:a", "copy"]);
+    if picture_path.is_some() {
+        command.args([
+            "-map",
+            "1:v:0",
+            "-c:v",
+            "copy",
+            "-disposition:v:0",
+            "attached_pic",
+        ]);
+    }
+    push_ffmpeg_metadata(&mut command, "title", Some(&metadata.title));
+    push_ffmpeg_metadata(&mut command, "artist", Some(&metadata.artist));
+    push_ffmpeg_metadata(&mut command, "album", metadata.album.as_deref());
+    push_ffmpeg_metadata(
+        &mut command,
+        "album_artist",
+        metadata.album_artist.as_deref(),
+    );
+    push_ffmpeg_metadata(&mut command, "genre", metadata.genre.as_deref());
+    let year = metadata.year.map(|value| value.to_string());
+    push_ffmpeg_metadata(&mut command, "date", year.as_deref());
+    let track = metadata.track_number.map(|value| value.to_string());
+    push_ffmpeg_metadata(&mut command, "track", track.as_deref());
+    let disc = metadata.disc_number.map(|value| value.to_string());
+    push_ffmpeg_metadata(&mut command, "disc", disc.as_deref());
+    push_ffmpeg_metadata(
+        &mut command,
+        "lyrics",
+        metadata.lyrics.as_ref().map(|lyrics| lyrics.text.as_str()),
+    );
+    command
+        .args(["-movflags", "+faststart", "-f", "ipod"])
+        .arg(&output_path);
+
+    let output = command.output().await;
+    if let Some(picture_path) = &picture_path {
+        let _ = tokio::fs::remove_file(picture_path).await;
+    }
+    let output = output.context("failed to run ffmpeg for M4A tags")?;
+    if !output.status.success() {
+        let _ = tokio::fs::remove_file(&output_path).await;
+        anyhow::bail!(
+            "ffmpeg M4A metadata remux failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    tokio::fs::File::open(&output_path)
+        .await?
+        .sync_all()
+        .await?;
+    #[cfg(windows)]
+    if tokio::fs::try_exists(path).await? {
+        tokio::fs::remove_file(path).await?;
+    }
+    tokio::fs::rename(&output_path, path).await?;
+    Ok(())
+}
+
+fn push_ffmpeg_metadata(command: &mut tokio::process::Command, key: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        command.arg("-metadata").arg(format!("{key}={value}"));
+    }
+}
+
+fn summarize_ffmpeg_error(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn write_metadata_blocking(
@@ -266,8 +406,11 @@ fn detect_mime(data: &[u8]) -> MimeType {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
         EmbeddedLyrics, TrackMetadata, apply_text_metadata, detect_mime, verify_audio_file,
+        write_mp4_metadata,
     };
     use lofty::picture::MimeType;
     use lofty::tag::{ItemKey, Tag, TagType};
@@ -322,5 +465,129 @@ mod tests {
         let mut plain = Tag::new(TagType::VorbisComments);
         apply_text_metadata(&mut plain, &metadata);
         assert_eq!(plain.get_string(ItemKey::UnsyncLyrics), Some("[00:00]line"));
+    }
+
+    #[tokio::test]
+    async fn mp4_metadata_remux_preserves_audio_and_one_cover() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-mp4-tags-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("track.m4a");
+        let cover = directory.join("cover.jpg");
+        if tokio::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .await
+            .is_err()
+        {
+            tokio::fs::remove_dir_all(directory).await.unwrap();
+            return;
+        }
+        assert!(
+            tokio::process::Command::new("ffmpeg")
+                .arg("-nostdin")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=0.1",
+                    "-c:a",
+                    "aac",
+                    "-f",
+                    "ipod",
+                ])
+                .arg(&audio)
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        assert!(
+            tokio::process::Command::new("ffmpeg")
+                .arg("-nostdin")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=32x32",
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                ])
+                .arg(&cover)
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        let metadata = TrackMetadata {
+            title: "Title".to_owned(),
+            artist: "Artist".to_owned(),
+            album: Some("Album".to_owned()),
+            album_artist: Some("Album artist".to_owned()),
+            genre: Some("Genre".to_owned()),
+            year: Some(2026),
+            track_number: Some(2),
+            disc_number: Some(1),
+            cover_url: None,
+            lyrics: None,
+        };
+        write_mp4_metadata(
+            &audio,
+            &metadata,
+            Some(tokio::fs::read(&cover).await.unwrap()),
+        )
+        .await
+        .unwrap();
+        verify_audio_file(&audio, "m4a").await.unwrap();
+
+        let probe = tokio::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:format_tags=title,album_artist",
+                "-of",
+                "json",
+            ])
+            .arg(&audio)
+            .output()
+            .await
+            .unwrap();
+        assert!(probe.status.success());
+        let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        assert_eq!(
+            probe["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|stream| stream["codec_type"] == "audio")
+                .count(),
+            1
+        );
+        assert_eq!(
+            probe["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|stream| stream["codec_type"] == "video")
+                .count(),
+            1
+        );
+        assert_eq!(probe["format"]["tags"]["title"], "Title");
+        assert_eq!(probe["format"]["tags"]["album_artist"], "Album artist");
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

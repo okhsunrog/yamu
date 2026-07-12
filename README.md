@@ -171,13 +171,16 @@ The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final
 path. Playlist downloads continue past individual failures and print a final
 report. FLAC-in-MP4 is losslessly remuxed to native `.flac` through `ffmpeg`;
-AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. Existing files are preserved
-unless `--force` is passed. Every completed or existing file is enriched with
-title, artist, album, album artist, year, genre, album track/disc position, and
-an embedded 600×600 front cover.
+AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. M4A metadata and its single
+attached cover are written by a lossless `ffmpeg` remux; FLAC and MP3 tags use
+Lofty. Existing files are preserved unless `--force` is passed. Every completed
+or existing file is enriched with title, artist, album, album artist, year,
+genre, album track/disc position, and an embedded 600×600 front cover.
 
 Resume validates each existing container and its duration before trusting it;
-truncated or corrupt files are atomically replaced. Playlist progress and the
+M4A validation also performs a complete audio decode so broken sample tables or
+AAC packets cannot pass a shallow container check. Truncated or corrupt files
+are atomically replaced. Playlist progress and the
 final per-track result are persisted after every completion in
 `.ym-download-state.json`. Transient negotiation failures and CDN transfers use
 bounded exponential retries, and every advertised CDN URL is attempted.
