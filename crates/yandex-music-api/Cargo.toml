@@ -13,12 +13,16 @@ categories = ["api-bindings", "multimedia"]
 default = ["oauth"]
 oauth = ["dep:uuid"]
 credentials = ["oauth", "dep:directories", "dep:zeroize", "tokio/rt"]
+downloads = ["dep:base64", "dep:hmac", "dep:sha2", "reqwest/stream"]
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 directories = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 url.workspace = true

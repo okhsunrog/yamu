@@ -6,6 +6,8 @@ use crate::{Error, Result};
 
 mod account;
 mod albums;
+#[cfg(feature = "downloads")]
+mod downloads;
 mod library;
 mod mutations;
 mod request;

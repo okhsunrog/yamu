@@ -1,0 +1,15 @@
+[package]
+name = "ym-download"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+url.workspace = true
+yandex-music-api = { workspace = true, features = ["credentials", "downloads"] }

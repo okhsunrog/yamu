@@ -7,11 +7,18 @@ Rust libraries and development tools for the unofficial Yandex Music API.
 - `yandex-music-api` — async API client, models and OAuth Device Flow.
 - `yandex-music-api`'s `credentials` feature — shared local credential storage for workspace applications.
 - `ym-auth` — login, logout and credential inspection tool.
+- `ym-download` — atomic single-track downloader using negotiated CDN streams.
 - `ym-inspect` — read-only API exploration client.
 - `ym-edit` — explicit liked-track and playlist mutation client.
 
 All applications share the `default` credential profile stored outside the
 repository. Run `cargo run -p ym-auth -- path` to display its location.
+
+The single library crate uses additive feature flags:
+
+- `oauth` (default) — Device Flow and token refresh primitives.
+- `credentials` — local profiles, locking and automatic refresh; enables `oauth`.
+- `downloads` — signed audio negotiation and CDN response streams.
 
 ## First login
 
@@ -71,3 +78,17 @@ Playlist track changes first fetch the current revision and submit a typed
 positional diff against that exact revision. A concurrent edit is reported as
 `PlaylistRevisionConflict` and is not retried automatically. Permanent playlist
 deletion requires `--yes`.
+
+## Downloading audio
+
+The `downloads` feature implements the signed `get-file-info` negotiation and
+opens short-lived CDN response streams without forwarding the OAuth token:
+
+```console
+cargo run -p ym-download -- <track-id>
+cargo run -p ym-download -- <track-id> --quality normal -o track.mp3
+```
+
+The server can return a lower tier than requested. `ym-download` writes to a
+same-directory `.part` file, syncs it, and only then renames it to the final
+path. Existing files are preserved unless `--force` is passed.

@@ -36,6 +36,18 @@ pub enum Error {
     #[error("failed to serialize API request: {0}")]
     SerializeRequest(#[from] serde_json::Error),
 
+    #[cfg(feature = "downloads")]
+    #[error("invalid download request: {0}")]
+    InvalidDownloadRequest(String),
+
+    #[cfg(feature = "downloads")]
+    #[error("track download is unavailable ({name}): {message}")]
+    DownloadUnavailable { name: String, message: String },
+
+    #[cfg(feature = "downloads")]
+    #[error("system clock is before the Unix epoch")]
+    InvalidSystemClock,
+
     #[cfg(feature = "oauth")]
     #[error(
         "Yandex OAuth error (HTTP {status}): {code}{description}",
