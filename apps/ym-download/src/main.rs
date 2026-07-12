@@ -13,18 +13,18 @@ use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
-    models::{DownloadInfo, DownloadOptions, DownloadQuality, Id},
-    resource::{PlaylistRef, TrackRef},
+    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id},
+    resource::{AlbumRef, PlaylistRef, TrackRef},
 };
 
 mod metadata;
 mod state;
 
 use metadata::{ArtworkCache, TrackMetadata, verify_audio_file, write_metadata};
-use state::{PlaylistStateStore, StateStatus};
+use state::{CollectionStateStore, StateStatus};
 
 #[derive(Debug, Parser)]
-#[command(about = "Download tracks and playlists from Yandex Music")]
+#[command(about = "Download tracks and collections from Yandex Music")]
 struct Cli {
     /// Credential profile created by ym-auth.
     #[arg(long, default_value = DEFAULT_PROFILE)]
@@ -49,6 +49,23 @@ enum Command {
         /// Replace an existing destination file.
         #[arg(long)]
         force: bool,
+    },
+    /// Download every track from an album in disc and track order.
+    Album {
+        /// Numeric album ID or Yandex Music album URL.
+        album: AlbumRef,
+        /// Destination directory; defaults to `artist - album (year)`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
+        /// Replace existing destination files.
+        #[arg(long)]
+        force: bool,
+        /// Maximum number of simultaneous track downloads.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+        jobs: u8,
     },
     /// Download every track from a playlist in playlist order.
     Playlist {
@@ -107,6 +124,13 @@ async fn run() -> Result<()> {
             output,
             force,
         } => download_track(&client, uid, &track, quality, output, force).await,
+        Command::Album {
+            album,
+            output,
+            quality,
+            force,
+            jobs,
+        } => download_album(&client, uid, &album, quality, output, force, jobs).await,
         Command::Playlist {
             playlist,
             output,
@@ -180,6 +204,34 @@ async fn download_track(
     Ok(())
 }
 
+async fn download_album(
+    client: &Client,
+    uid: Id,
+    album_ref: &AlbumRef,
+    quality: DownloadQuality,
+    output: Option<PathBuf>,
+    force: bool,
+    jobs: u8,
+) -> Result<()> {
+    let album = client.album_with_tracks(album_ref.album_id()).await?;
+    let directory = output.unwrap_or_else(|| PathBuf::from(album_directory_name(&album)));
+    tokio::fs::create_dir_all(&directory).await?;
+    let downloads = album_download_jobs(&album, &directory)?;
+
+    download_jobs(
+        client,
+        uid,
+        quality,
+        force,
+        jobs,
+        &directory,
+        "album",
+        album_ref.album_id(),
+        downloads,
+    )
+    .await
+}
+
 struct PlaylistDownloadRequest {
     playlist: PlaylistRef,
     quality: DownloadQuality,
@@ -211,8 +263,6 @@ async fn download_playlist(
     tokio::fs::create_dir_all(&directory).await?;
     let width = playlist.tracks.len().to_string().len().max(2);
 
-    let semaphore = Arc::new(Semaphore::new(jobs as usize));
-    let artwork = ArtworkCache::new()?;
     let total = playlist.tracks.len();
     let mut jobs_to_run = Vec::with_capacity(total);
     for (index, short) in playlist.tracks.into_iter().enumerate() {
@@ -237,7 +287,7 @@ async fn download_playlist(
             }),
             safe_file_component(&title),
         );
-        let job = PlaylistJob {
+        let job = DownloadJob {
             index: index + 1,
             total,
             track_id: short.id.to_string(),
@@ -256,26 +306,56 @@ async fn download_playlist(
         };
         jobs_to_run.push(job);
     }
-    let state = PlaylistStateStore::open(&directory, &owner, &kind, &jobs_to_run).await?;
+    download_jobs(
+        client,
+        uid,
+        quality,
+        force,
+        jobs,
+        &directory,
+        "playlist",
+        &format!("{owner}:{kind}"),
+        jobs_to_run,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_jobs(
+    client: &Client,
+    uid: Id,
+    quality: DownloadQuality,
+    force: bool,
+    concurrency: u8,
+    directory: &Path,
+    source_kind: &str,
+    source_id: &str,
+    jobs: Vec<DownloadJob>,
+) -> Result<()> {
+    let state = CollectionStateStore::open(directory, source_kind, source_id, &jobs).await?;
+    let semaphore = Arc::new(Semaphore::new(concurrency as usize));
+    let artwork = ArtworkCache::new()?;
     let mut tasks = JoinSet::new();
-    for job in jobs_to_run {
+    for job in jobs {
         let client = client.clone();
         let uid = uid.clone();
         let semaphore = Arc::clone(&semaphore);
         let artwork = artwork.clone();
         tasks.spawn(async move {
             let _permit = semaphore.acquire_owned().await.expect("semaphore is open");
-            download_playlist_track(&client, uid, quality, force, &artwork, job).await
+            download_collection_track(&client, uid, quality, force, &artwork, job).await
         });
     }
 
     let mut downloaded = 0;
     let mut skipped = 0;
     let mut failures = Vec::new();
+    let mut total = 0;
     while let Some(result) = tasks.join_next().await {
-        let outcome = result.context("playlist download task panicked")?;
+        let outcome = result.context("collection download task panicked")?;
+        total = outcome.total;
         match outcome.result {
-            Ok(PlaylistTrackStatus::Downloaded {
+            Ok(DownloadStatus::Downloaded {
                 path,
                 quality,
                 codec,
@@ -293,7 +373,7 @@ async fn download_playlist(
                     codec
                 );
             }
-            Ok(PlaylistTrackStatus::Skipped { path }) => {
+            Ok(DownloadStatus::Skipped { path }) => {
                 skipped += 1;
                 state
                     .record(outcome.index, StateStatus::Verified, Some(&path), None)
@@ -305,7 +385,7 @@ async fn download_playlist(
                     path.display()
                 );
             }
-            Ok(PlaylistTrackStatus::Repaired { path, reason }) => {
+            Ok(DownloadStatus::Repaired { path, reason }) => {
                 downloaded += 1;
                 state
                     .record(
@@ -336,20 +416,21 @@ async fn download_playlist(
     }
 
     failures.sort_by_key(|failure| failure.0);
+    let width = total.to_string().len().max(2);
     println!(
-        "playlist summary: {downloaded} downloaded, {skipped} skipped, {} failed",
+        "collection summary: {downloaded} downloaded, {skipped} skipped, {} failed",
         failures.len()
     );
     for (index, label, error) in &failures {
         eprintln!("  {index:0width$}. {label}: {error}");
     }
     if !failures.is_empty() {
-        bail!("playlist completed with {} failed tracks", failures.len());
+        bail!("collection completed with {} failed tracks", failures.len());
     }
     Ok(())
 }
 
-struct PlaylistJob {
+struct DownloadJob {
     index: usize,
     total: usize,
     track_id: String,
@@ -359,14 +440,14 @@ struct PlaylistJob {
     metadata: TrackMetadata,
 }
 
-struct PlaylistOutcome {
+struct DownloadOutcome {
     index: usize,
     total: usize,
     label: String,
-    result: std::result::Result<PlaylistTrackStatus, String>,
+    result: std::result::Result<DownloadStatus, String>,
 }
 
-enum PlaylistTrackStatus {
+enum DownloadStatus {
     Downloaded {
         path: PathBuf,
         quality: String,
@@ -381,15 +462,16 @@ enum PlaylistTrackStatus {
     },
 }
 
-async fn download_playlist_track(
+async fn download_collection_track(
     client: &Client,
     uid: Id,
     quality: DownloadQuality,
     force: bool,
     artwork: &ArtworkCache,
-    job: PlaylistJob,
-) -> PlaylistOutcome {
+    job: DownloadJob,
+) -> DownloadOutcome {
     let result = async {
+        tokio::fs::create_dir_all(&job.directory).await?;
         let info = negotiate(client, uid, &job.track_id, quality).await?;
         let destination =
             job.directory
@@ -398,13 +480,13 @@ async fn download_playlist_track(
             match verify_audio_file(&destination, normalized_extension(&info)).await {
                 Ok(()) => {
                     write_metadata(&destination, &job.metadata, artwork).await?;
-                    return Ok(PlaylistTrackStatus::Skipped { path: destination });
+                    return Ok(DownloadStatus::Skipped { path: destination });
                 }
                 Err(error) => {
                     let reason = format!("{error:#}");
                     download_normalized(client, &info, &destination, true, false).await?;
                     write_metadata(&destination, &job.metadata, artwork).await?;
-                    return Ok(PlaylistTrackStatus::Repaired {
+                    return Ok(DownloadStatus::Repaired {
                         path: destination,
                         reason,
                     });
@@ -413,7 +495,7 @@ async fn download_playlist_track(
         }
         download_normalized(client, &info, &destination, force, false).await?;
         write_metadata(&destination, &job.metadata, artwork).await?;
-        Ok(PlaylistTrackStatus::Downloaded {
+        Ok(DownloadStatus::Downloaded {
             path: destination,
             quality: info.quality,
             codec: info.codec,
@@ -422,7 +504,7 @@ async fn download_playlist_track(
     .await
     .map_err(|error: anyhow::Error| format!("{error:#}"));
 
-    PlaylistOutcome {
+    DownloadOutcome {
         index: job.index,
         total: job.total,
         label: job.label,
@@ -725,6 +807,73 @@ fn safe_file_component(value: &str) -> String {
     }
 }
 
+fn album_directory_name(album: &Album) -> String {
+    let artists = album
+        .artists
+        .iter()
+        .filter_map(|artist| artist.name.as_deref())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let artist = if artists.is_empty() {
+        "Unknown artist"
+    } else {
+        &artists
+    };
+    let year = album
+        .year
+        .map(|year| format!(" ({year})"))
+        .unwrap_or_default();
+    format!(
+        "{} - {}{}",
+        safe_file_component(artist),
+        safe_file_component(album.title.as_deref().unwrap_or("Untitled album")),
+        year
+    )
+}
+
+fn album_download_jobs(album: &Album, directory: &Path) -> Result<Vec<DownloadJob>> {
+    let volumes = album
+        .volumes
+        .as_ref()
+        .context("album response does not contain tracks")?;
+    let total = volumes.iter().map(Vec::len).sum::<usize>();
+    let track_width = volumes
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or_default()
+        .to_string()
+        .len()
+        .max(2);
+    let disc_width = volumes.len().to_string().len().max(1);
+    let mut downloads = Vec::with_capacity(total);
+    for (disc_index, tracks) in volumes.iter().enumerate() {
+        let track_directory = if volumes.len() > 1 {
+            directory.join(format!("CD{:0disc_width$}", disc_index + 1))
+        } else {
+            directory.to_owned()
+        };
+        for (track_index, track) in tracks.iter().enumerate() {
+            let metadata = TrackMetadata::from_track_and_album(track, album);
+            downloads.push(DownloadJob {
+                index: downloads.len() + 1,
+                total,
+                track_id: track.id.to_string(),
+                label: format!("{} — {}", metadata.artist, metadata.title),
+                stem: format!(
+                    "{:0track_width$} - {} - {}",
+                    track_index + 1,
+                    safe_file_component(&metadata.artist),
+                    safe_file_component(&metadata.title),
+                ),
+                directory: track_directory.clone(),
+                metadata,
+            });
+        }
+    }
+    Ok(downloads)
+}
+
 fn default_track_filename(metadata: &TrackMetadata, extension: &str) -> String {
     format!(
         "{} - {}.{extension}",
@@ -755,5 +904,34 @@ mod tests {
             default_track_filename(&metadata, "flac"),
             "Artist_Band - Song_ Part 1.flac"
         );
+    }
+
+    #[test]
+    fn builds_multidisc_album_layout_and_metadata() {
+        let album: Album = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "title": "Album: One",
+            "year": 2026,
+            "genre": "electronic",
+            "coverUri": "example/%%",
+            "artists": [{"id": 1, "name": "Artist/Band"}],
+            "volumes": [
+                [{"id": 11, "title": "First", "artists": [{"id": 1, "name": "Artist/Band"}]}],
+                [{"id": 12, "title": "Second", "artists": [{"id": 1, "name": "Artist/Band"}]}]
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            album_directory_name(&album),
+            "Artist_Band - Album_ One (2026)"
+        );
+        let jobs = album_download_jobs(&album, Path::new("album")).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].directory, Path::new("album/CD1"));
+        assert_eq!(jobs[1].directory, Path::new("album/CD2"));
+        assert_eq!(jobs[0].stem, "01 - Artist_Band - First");
+        assert_eq!(jobs[0].metadata.album.as_deref(), Some("Album: One"));
+        assert_eq!(jobs[0].metadata.year, Some(2026));
     }
 }

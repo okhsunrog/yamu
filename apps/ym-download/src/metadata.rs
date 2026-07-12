@@ -8,7 +8,7 @@ use lofty::{
     tag::{Accessor, ItemKey, Tag},
 };
 use tokio::sync::Mutex;
-use yandex_music_api::models::Track;
+use yandex_music_api::models::{Album, Track};
 
 #[derive(Clone, Debug)]
 pub struct TrackMetadata {
@@ -61,6 +61,34 @@ impl TrackMetadata {
                 .cover_url("600x600")
                 .or_else(|| album.and_then(|album| album.cover_url("600x600"))),
         }
+    }
+
+    pub fn from_track_and_album(track: &Track, album: &Album) -> Self {
+        let mut metadata = Self::from_track(track);
+        if metadata.album.is_none() {
+            metadata.album.clone_from(&album.title);
+        }
+        if metadata.album_artist.is_none() {
+            let artists = album
+                .artists
+                .iter()
+                .filter_map(|artist| artist.name.as_deref())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !artists.is_empty() {
+                metadata.album_artist = Some(artists);
+            }
+        }
+        if metadata.genre.is_none() {
+            metadata.genre.clone_from(&album.genre);
+        }
+        if metadata.year.is_none() {
+            metadata.year = album.year;
+        }
+        if metadata.cover_url.is_none() {
+            metadata.cover_url = album.cover_url("600x600");
+        }
+        metadata
     }
 }
 

@@ -9,15 +9,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
-use crate::PlaylistJob;
+use crate::DownloadJob;
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = ".ym-download-state.json";
 
 #[derive(Clone)]
-pub struct PlaylistStateStore {
+pub struct CollectionStateStore {
     path: PathBuf,
-    state: Arc<Mutex<PlaylistState>>,
+    state: Arc<Mutex<CollectionState>>,
     write_lock: Arc<Mutex<()>>,
 }
 
@@ -32,10 +32,10 @@ pub enum StateStatus {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct PlaylistState {
+struct CollectionState {
     version: u32,
-    owner: String,
-    kind: String,
+    source_kind: String,
+    source_id: String,
     updated_at: u64,
     entries: BTreeMap<usize, StateEntry>,
 }
@@ -49,22 +49,24 @@ struct StateEntry {
     error: Option<String>,
 }
 
-impl PlaylistStateStore {
+impl CollectionStateStore {
     pub async fn open(
         directory: &Path,
-        owner: &str,
-        kind: &str,
-        jobs: &[PlaylistJob],
+        source_kind: &str,
+        source_id: &str,
+        jobs: &[DownloadJob],
     ) -> Result<Self> {
         let path = directory.join(STATE_FILE);
         let old = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice::<PlaylistState>(&bytes).ok(),
+            Ok(bytes) => serde_json::from_slice::<CollectionState>(&bytes).ok(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
         let old_entries = old
             .filter(|state| {
-                state.version == STATE_VERSION && state.owner == owner && state.kind == kind
+                state.version == STATE_VERSION
+                    && state.source_kind == source_kind
+                    && state.source_id == source_id
             })
             .map(|state| state.entries)
             .unwrap_or_default();
@@ -86,10 +88,10 @@ impl PlaylistStateStore {
             .collect();
         let store = Self {
             path,
-            state: Arc::new(Mutex::new(PlaylistState {
+            state: Arc::new(Mutex::new(CollectionState {
                 version: STATE_VERSION,
-                owner: owner.to_owned(),
-                kind: kind.to_owned(),
+                source_kind: source_kind.to_owned(),
+                source_id: source_id.to_owned(),
                 updated_at: unix_timestamp()?,
                 entries,
             })),
