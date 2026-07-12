@@ -37,7 +37,14 @@ impl Client {
 
     /// Expands all compact entries from a revisioned track list.
     pub async fn tracks_from_list(&self, tracks: &TracksList) -> Result<Vec<Track>> {
-        self.tracks(tracks.track_ids()).await
+        const BATCH_SIZE: usize = 100;
+
+        let ids = tracks.track_ids().collect::<Vec<_>>();
+        let mut expanded = Vec::with_capacity(ids.len());
+        for batch in ids.chunks(BATCH_SIZE) {
+            expanded.extend(self.tracks(batch.iter().map(String::as_str)).await?);
+        }
+        Ok(expanded)
     }
 
     /// Returns playlist summaries belonging to a user.

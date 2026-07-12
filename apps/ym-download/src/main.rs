@@ -13,8 +13,8 @@ use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
-    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id},
-    resource::{AlbumRef, PlaylistRef, TrackRef},
+    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, Track},
+    resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
 
 mod metadata;
@@ -57,6 +57,44 @@ enum Command {
         /// Destination directory; defaults to `artist - album (year)`.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
+        /// Replace existing destination files.
+        #[arg(long)]
+        force: bool,
+        /// Maximum number of simultaneous track downloads.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+        jobs: u8,
+    },
+    /// Download tracks liked by the current account.
+    Liked {
+        /// Destination directory.
+        #[arg(short, long, default_value = "Liked tracks")]
+        output: PathBuf,
+        /// Download at most this many tracks.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, default_value_t = DownloadQuality::Lossless)]
+        quality: DownloadQuality,
+        /// Replace existing destination files.
+        #[arg(long)]
+        force: bool,
+        /// Maximum number of simultaneous track downloads.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+        jobs: u8,
+    },
+    /// Download an artist's complete track catalog.
+    Artist {
+        /// Numeric artist ID or Yandex Music artist URL.
+        artist: ArtistRef,
+        /// Destination directory; defaults to the artist name.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Download at most this many tracks.
+        #[arg(long)]
+        limit: Option<usize>,
         /// Highest requested quality; the server may return a lower tier.
         #[arg(long, default_value_t = DownloadQuality::Lossless)]
         quality: DownloadQuality,
@@ -131,6 +169,21 @@ async fn run() -> Result<()> {
             force,
             jobs,
         } => download_album(&client, uid, &album, quality, output, force, jobs).await,
+        Command::Liked {
+            output,
+            limit,
+            quality,
+            force,
+            jobs,
+        } => download_liked(&client, uid, quality, output, limit, force, jobs).await,
+        Command::Artist {
+            artist,
+            output,
+            limit,
+            quality,
+            force,
+            jobs,
+        } => download_artist(&client, uid, &artist, quality, output, limit, force, jobs).await,
         Command::Playlist {
             playlist,
             output,
@@ -227,6 +280,82 @@ async fn download_album(
         &directory,
         "album",
         album_ref.album_id(),
+        downloads,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_liked(
+    client: &Client,
+    uid: Id,
+    quality: DownloadQuality,
+    directory: PathBuf,
+    limit: Option<usize>,
+    force: bool,
+    jobs: u8,
+) -> Result<()> {
+    let library = client
+        .liked_tracks(uid.clone(), 0)
+        .await?
+        .context("liked-track library was not returned")?;
+    let mut tracks = client.tracks_from_list(&library).await?;
+    if let Some(limit) = limit {
+        tracks.truncate(limit);
+    }
+    tokio::fs::create_dir_all(&directory).await?;
+    let downloads = ordered_track_jobs(&tracks, &directory);
+    download_jobs(
+        client,
+        uid.clone(),
+        quality,
+        force,
+        jobs,
+        &directory,
+        "liked",
+        &uid.to_string(),
+        downloads,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_artist(
+    client: &Client,
+    uid: Id,
+    artist_ref: &ArtistRef,
+    quality: DownloadQuality,
+    output: Option<PathBuf>,
+    limit: Option<usize>,
+    force: bool,
+    jobs: u8,
+) -> Result<()> {
+    let artist = client
+        .artists([artist_ref.artist_id()])
+        .await?
+        .into_iter()
+        .next()
+        .context("artist metadata was not returned")?;
+    let directory = output.unwrap_or_else(|| {
+        PathBuf::from(safe_file_component(
+            artist.name.as_deref().unwrap_or("Unknown artist"),
+        ))
+    });
+    let mut tracks = client.all_artist_tracks(artist_ref.artist_id()).await?;
+    if let Some(limit) = limit {
+        tracks.truncate(limit);
+    }
+    tokio::fs::create_dir_all(&directory).await?;
+    let downloads = ordered_track_jobs(&tracks, &directory);
+    download_jobs(
+        client,
+        uid,
+        quality,
+        force,
+        jobs,
+        &directory,
+        "artist",
+        artist_ref.artist_id(),
         downloads,
     )
     .await
@@ -874,6 +1003,32 @@ fn album_download_jobs(album: &Album, directory: &Path) -> Result<Vec<DownloadJo
     Ok(downloads)
 }
 
+fn ordered_track_jobs(tracks: &[Track], directory: &Path) -> Vec<DownloadJob> {
+    let total = tracks.len();
+    let width = total.to_string().len().max(2);
+    tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            let metadata = TrackMetadata::from_track(track);
+            DownloadJob {
+                index: index + 1,
+                total,
+                track_id: track.id.to_string(),
+                label: format!("{} — {}", metadata.artist, metadata.title),
+                stem: format!(
+                    "{:0width$} - {} - {}",
+                    index + 1,
+                    safe_file_component(&metadata.artist),
+                    safe_file_component(&metadata.title),
+                ),
+                directory: directory.to_owned(),
+                metadata,
+            }
+        })
+        .collect()
+}
+
 fn default_track_filename(metadata: &TrackMetadata, extension: &str) -> String {
     format!(
         "{} - {}.{extension}",
@@ -933,5 +1088,19 @@ mod tests {
         assert_eq!(jobs[0].stem, "01 - Artist_Band - First");
         assert_eq!(jobs[0].metadata.album.as_deref(), Some("Album: One"));
         assert_eq!(jobs[0].metadata.year, Some(2026));
+    }
+
+    #[test]
+    fn builds_numbered_collection_layout() {
+        let tracks = serde_json::from_value::<Vec<Track>>(serde_json::json!([
+            {"id": 11, "title": "First", "artists": [{"id": 1, "name": "One"}]},
+            {"id": 12, "title": "Second", "artists": [{"id": 2, "name": "Two"}]}
+        ]))
+        .unwrap();
+
+        let jobs = ordered_track_jobs(&tracks, Path::new("collection"));
+        assert_eq!(jobs[0].stem, "01 - One - First");
+        assert_eq!(jobs[1].stem, "02 - Two - Second");
+        assert_eq!(jobs[1].track_id, "12");
     }
 }

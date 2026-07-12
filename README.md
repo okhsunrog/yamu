@@ -131,6 +131,8 @@ cargo run -p ym-download -- track <track-id> --quality normal -o track.mp3
 cargo run -p ym-download -- album <album-id-or-url> --jobs 4
 cargo run -p ym-download -- playlist <owner>:<kind> -o ./playlist --jobs 4
 cargo run -p ym-download -- playlist <yandex-music-playlist-url>
+cargo run -p ym-download -- liked -o ./liked --jobs 4
+cargo run -p ym-download -- artist <artist-id-or-url> --limit 100
 ```
 
 Track, album, artist, and playlist arguments accept canonical Yandex Music
@@ -141,6 +143,10 @@ Album downloads use `Artist - Album (year)` directories. Multi-disc releases
 are split into `CD1`, `CD2`, and so on, while files retain disc-local track
 numbers. Albums and playlists share the same concurrent, atomic, verified
 resume pipeline.
+
+Liked libraries are expanded in bounded API batches before downloading. Artist
+catalogs are fetched through every available API page. Both commands accept an
+optional `--limit` and preserve their source ordering in numbered filenames.
 
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final
