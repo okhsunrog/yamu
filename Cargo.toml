@@ -31,6 +31,8 @@ clap = { version = "4.6", features = ["derive"] }
 directories = "6"
 hmac = "0.13.0"
 lofty = "0.24.0"
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format"] }
+imagesize = { version = "0.15.0", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -50,11 +52,17 @@ oauth = ["dep:uuid"]
 credentials = ["oauth", "dep:directories", "dep:zeroize", "tokio/rt"]
 downloads = ["dep:base64", "dep:hmac", "dep:sha2", "reqwest/stream"]
 lyrics = ["dep:base64", "dep:hmac", "dep:sha2"]
+media = ["dep:lofty", "tokio/fs", "tokio/rt"]
+media-ffmpeg-cli = ["media", "tokio/io-util", "tokio/process"]
+media-ffmpeg = ["media", "dep:ffmpeg-next", "dep:imagesize"]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
 directories = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+lofty = { workspace = true, optional = true }
+ffmpeg-next = { workspace = true, optional = true }
+imagesize = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

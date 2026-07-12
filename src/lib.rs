@@ -9,6 +9,8 @@ mod client;
 #[cfg(feature = "credentials")]
 pub mod credentials;
 mod error;
+#[cfg(feature = "media")]
+pub mod media;
 pub mod models;
 pub mod resource;
 

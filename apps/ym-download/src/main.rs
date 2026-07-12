@@ -8,11 +8,12 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncWriteExt;
-use tokio::{process::Command as TokioCommand, sync::Semaphore, task::JoinSet};
+use tokio::{sync::Semaphore, task::JoinSet};
 use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
+    media::{MediaBackend, ffmpeg_cli::FfmpegCli},
     models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Track},
     resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
@@ -1068,42 +1069,10 @@ async fn download_normalized(
 }
 
 async fn remux_flac(source: &Path, destination: &Path, force: bool) -> Result<()> {
-    if tokio::fs::try_exists(destination).await? && !force {
-        bail!("destination {} already exists", destination.display());
-    }
-    let temporary = sibling_temporary(destination, "remux.part");
-    let output = TokioCommand::new("ffmpeg")
-        .arg("-nostdin")
-        .args(["-v", "error", "-i"])
-        .arg(source)
-        .args([
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "0",
-            "-c:a",
-            "copy",
-            "-f",
-            "flac",
-        ])
-        .arg(&temporary)
-        .output()
+    FfmpegCli
+        .remux_flac(source.to_owned(), destination.to_owned(), force)
         .await
-        .context("failed to run ffmpeg; install it to normalize FLAC-in-MP4")?;
-    if !output.status.success() {
-        let _ = tokio::fs::remove_file(&temporary).await;
-        bail!(
-            "ffmpeg remux failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    tokio::fs::File::open(&temporary).await?.sync_all().await?;
-    #[cfg(windows)]
-    if force && tokio::fs::try_exists(destination).await? {
-        tokio::fs::remove_file(destination).await?;
-    }
-    tokio::fs::rename(&temporary, destination).await?;
-    Ok(())
+        .map_err(Into::into)
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {

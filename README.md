@@ -20,6 +20,15 @@ The single library crate uses additive feature flags:
 - `credentials` — local profiles, locking and automatic refresh; enables `oauth`.
 - `downloads` — signed audio negotiation and CDN response streams.
 - `lyrics` — signed plain-text and synchronized lyrics retrieval.
+- `media` — backend-neutral audio tagging, normalization, and validation API.
+- `media-ffmpeg-cli` — desktop backend that invokes an installed `ffmpeg`.
+- `media-ffmpeg` — in-process backend linked to FFmpeg libraries, intended for
+  Android and other environments without a child-process executable.
+
+The two FFmpeg features implement the same `MediaBackend` contract and can be
+tested together. `media-ffmpeg` does not require the `ffmpeg` executable at
+runtime, but the target application must build and package compatible FFmpeg
+libraries. Neither backend uses Symphonia.
 
 The API is private and may change without notice, so the library is currently
 experimental. A minimal direct client looks like this:
@@ -170,10 +179,13 @@ produce a warning without discarding an otherwise valid audio download.
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final
 path. Playlist downloads continue past individual failures and print a final
-report. FLAC-in-MP4 is losslessly remuxed to native `.flac` through `ffmpeg`;
+report. FLAC-in-MP4 is losslessly remuxed to native `.flac` through the selected
+media backend;
 AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. M4A metadata and its single
-attached cover are written by a lossless `ffmpeg` remux; FLAC and MP3 tags use
-Lofty. Existing files are preserved unless `--force` is passed. Every completed
+attached cover are written by a lossless remux; FLAC and MP3 tags use Lofty.
+The workspace `ym-download` binary selects `media-ffmpeg-cli`; applications can
+select the in-process `media-ffmpeg` backend instead. Existing files are
+preserved unless `--force` is passed. Every completed
 or existing file is enriched with title, artist, album, album artist, year,
 genre, album track/disc position, and an embedded 600×600 front cover.
 
