@@ -14,6 +14,7 @@ use yandex_music_api::{
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
     models::{DownloadInfo, DownloadOptions, DownloadQuality, Id},
+    resource::{PlaylistRef, TrackRef},
 };
 
 mod metadata;
@@ -37,8 +38,8 @@ struct Cli {
 enum Command {
     /// Download one track.
     Track {
-        /// Numeric Yandex Music track ID.
-        track_id: String,
+        /// Numeric track ID or Yandex Music track URL.
+        track: TrackRef,
         /// Highest requested quality; the server may return a lower tier.
         #[arg(long, default_value_t = DownloadQuality::Lossless)]
         quality: DownloadQuality,
@@ -51,10 +52,8 @@ enum Command {
     },
     /// Download every track from a playlist in playlist order.
     Playlist {
-        /// Playlist owner UID or login.
-        owner: String,
-        /// Playlist kind.
-        kind: String,
+        /// Playlist as owner:kind or a Yandex Music playlist URL.
+        playlist: PlaylistRef,
         /// Destination directory; defaults to a sanitized playlist title.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -103,14 +102,13 @@ async fn run() -> Result<()> {
     let uid = current_account_uid(&client).await?;
     match cli.command {
         Command::Track {
-            track_id,
+            track,
             quality,
             output,
             force,
-        } => download_track(&client, uid, &track_id, quality, output, force).await,
+        } => download_track(&client, uid, &track, quality, output, force).await,
         Command::Playlist {
-            owner,
-            kind,
+            playlist,
             output,
             quality,
             force,
@@ -120,8 +118,7 @@ async fn run() -> Result<()> {
                 &client,
                 uid,
                 PlaylistDownloadRequest {
-                    owner,
-                    kind,
+                    playlist,
                     quality,
                     output,
                     force,
@@ -136,11 +133,12 @@ async fn run() -> Result<()> {
 async fn download_track(
     client: &Client,
     uid: Id,
-    track_id: &str,
+    track: &TrackRef,
     quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
 ) -> Result<()> {
+    let track_id = track.track_id();
     let track = client
         .tracks([track_id])
         .await?
@@ -183,8 +181,7 @@ async fn download_track(
 }
 
 struct PlaylistDownloadRequest {
-    owner: String,
-    kind: String,
+    playlist: PlaylistRef,
     quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
@@ -197,13 +194,14 @@ async fn download_playlist(
     request: PlaylistDownloadRequest,
 ) -> Result<()> {
     let PlaylistDownloadRequest {
-        owner,
-        kind,
+        playlist,
         quality,
         output,
         force,
         jobs,
     } = request;
+    let owner = playlist.owner().to_owned();
+    let kind = playlist.kind().to_owned();
     let playlist = client.playlist(owner.as_str(), kind.as_str()).await?;
     let directory = output.unwrap_or_else(|| {
         PathBuf::from(safe_file_component(

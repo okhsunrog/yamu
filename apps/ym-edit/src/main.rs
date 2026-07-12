@@ -8,6 +8,7 @@ use yandex_music_api::{
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
     models::{Id, Playlist, PlaylistDiff, PlaylistTrackId, PlaylistVisibility},
+    resource::{AlbumRef, PlaylistRef, TrackRef},
 };
 
 #[derive(Debug, Parser)]
@@ -30,12 +31,12 @@ enum Command {
     /// Add one or more tracks to the liked-track library.
     Like {
         #[arg(required = true)]
-        track_ids: Vec<String>,
+        tracks: Vec<TrackRef>,
     },
     /// Remove one or more tracks from the liked-track library.
     Unlike {
         #[arg(required = true)]
-        track_ids: Vec<String>,
+        tracks: Vec<TrackRef>,
     },
     /// Create a playlist.
     PlaylistCreate {
@@ -54,8 +55,8 @@ enum Command {
     /// Insert a track into a playlist using its current revision.
     PlaylistAdd {
         kind: String,
-        track_id: String,
-        album_id: String,
+        track: TrackRef,
+        album: Option<AlbumRef>,
         #[arg(long, default_value_t = 0)]
         at: usize,
     },
@@ -131,14 +132,18 @@ async fn run() -> Result<()> {
     let mut output = io::stdout().lock();
 
     match cli.command {
-        Command::Like { track_ids } => {
-            let revision = client.like_tracks(uid, track_ids).await?;
+        Command::Like { tracks } => {
+            let revision = client
+                .like_tracks(uid, tracks.iter().map(TrackRef::track_id))
+                .await?;
             print_value(&mut output, cli.json, &revision, || {
                 format!("liked-track revision: {}", revision.revision)
             })?;
         }
-        Command::Unlike { track_ids } => {
-            let revision = client.unlike_tracks(uid, track_ids).await?;
+        Command::Unlike { tracks } => {
+            let revision = client
+                .unlike_tracks(uid, tracks.iter().map(TrackRef::track_id))
+                .await?;
             print_value(&mut output, cli.json, &revision, || {
                 format!("liked-track revision: {}", revision.revision)
             })?;
@@ -150,24 +155,33 @@ async fn run() -> Result<()> {
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistRename { kind, title } => {
-            let playlist = client.rename_playlist(uid, kind, title).await?;
+            let playlist = client
+                .rename_playlist(uid, playlist_kind(kind)?, title)
+                .await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistVisibility { kind, visibility } => {
             let playlist = client
-                .set_playlist_visibility(uid, kind, visibility.into())
+                .set_playlist_visibility(uid, playlist_kind(kind)?, visibility.into())
                 .await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistAdd {
             kind,
-            track_id,
-            album_id,
+            track,
+            album,
             at,
         } => {
+            let kind = playlist_kind(kind)?;
+            let album_id = album
+                .as_ref()
+                .map(AlbumRef::album_id)
+                .or_else(|| track.album_id())
+                .context("album ID is required when the track is not an album/track URL")?;
             let current = client.playlist(uid.clone(), kind.clone()).await?;
             let revision = playlist_revision(&current)?;
-            let diff = PlaylistDiff::new().insert(at, [PlaylistTrackId::new(track_id, album_id)]);
+            let diff =
+                PlaylistDiff::new().insert(at, [PlaylistTrackId::new(track.track_id(), album_id)]);
             let playlist = client.change_playlist(uid, kind, revision, &diff).await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
@@ -175,6 +189,7 @@ async fn run() -> Result<()> {
             if from >= to {
                 bail!("invalid range: --from must be smaller than --to");
             }
+            let kind = playlist_kind(kind)?;
             let current = client.playlist(uid.clone(), kind.clone()).await?;
             let revision = playlist_revision(&current)?;
             let diff = PlaylistDiff::new().delete(from, to);
@@ -185,7 +200,7 @@ async fn run() -> Result<()> {
             if !yes {
                 bail!("refusing permanent deletion without --yes");
             }
-            client.delete_playlist(uid, kind).await?;
+            client.delete_playlist(uid, playlist_kind(kind)?).await?;
             writeln!(output, "playlist deleted")?;
         }
     }
@@ -206,6 +221,14 @@ fn playlist_revision(playlist: &Playlist) -> Result<u64> {
     playlist
         .revision
         .context("playlist response does not contain a revision")
+}
+
+fn playlist_kind(value: String) -> Result<String> {
+    if value.contains("://") {
+        Ok(value.parse::<PlaylistRef>()?.kind().to_owned())
+    } else {
+        Ok(value)
+    }
 }
 
 fn print_playlist(output: &mut impl Write, json: bool, playlist: &Playlist) -> Result<()> {

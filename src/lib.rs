@@ -10,6 +10,7 @@ mod client;
 pub mod credentials;
 mod error;
 pub mod models;
+pub mod resource;
 
 pub use client::{Client, ClientBuilder, ReadRequestPolicy, SearchOptions, SearchType};
 pub use error::{Error, Result};

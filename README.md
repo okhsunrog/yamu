@@ -75,16 +75,17 @@ redacted from `Debug` output.
 ```console
 cargo run -p ym-inspect -- account
 cargo run -p ym-inspect -- search "Boards of Canada"
-cargo run -p ym-inspect -- track 10994777:1193829
+cargo run -p ym-inspect -- track 10994777
+cargo run -p ym-inspect -- track 'https://music.yandex.ru/album/1193829/track/10994777?utm_source=web'
 cargo run -p ym-inspect -- album 1193829
 cargo run -p ym-inspect -- likes --limit 20
 cargo run -p ym-inspect -- playlists
-cargo run -p ym-inspect -- playlist <owner> <kind>
+cargo run -p ym-inspect -- playlist <owner>:<kind>
 cargo run -p ym-inspect -- artist <id>
 cargo run -p ym-inspect -- artist-tracks <id> --page-size 100
 cargo run -p ym-inspect -- artist-albums <id> --page-size 100
 cargo run -p ym-inspect -- lyrics <track-id> --lrc
-cargo run -p ym-inspect -- playlist-recommendations <owner> <kind>
+cargo run -p ym-inspect -- playlist-recommendations <owner>:<kind>
 cargo run -p ym-inspect -- stations
 cargo run -p ym-inspect -- station-tracks user onyourwave
 ```
@@ -125,9 +126,15 @@ opens short-lived CDN response streams without forwarding the OAuth token:
 
 ```console
 cargo run -p ym-download -- track <track-id>
+cargo run -p ym-download -- track <yandex-music-track-url>
 cargo run -p ym-download -- track <track-id> --quality normal -o track.mp3
-cargo run -p ym-download -- playlist <owner> <kind> -o ./playlist --jobs 4
+cargo run -p ym-download -- playlist <owner>:<kind> -o ./playlist --jobs 4
+cargo run -p ym-download -- playlist <yandex-music-playlist-url>
 ```
+
+Track, album, artist, and playlist arguments accept canonical Yandex Music
+links as well as compact IDs. URL query parameters and fragments, including
+copy-link `utm_*` parameters, are discarded during parsing.
 
 The server can return a lower tier than requested. `ym-download` writes to a
 same-directory `.part` file, syncs it, and only then renames it to the final

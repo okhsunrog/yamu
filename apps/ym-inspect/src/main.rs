@@ -11,6 +11,7 @@ use yandex_music_api::{
         Album, ArtistAlbumSort, Id, LyricsFormat, PageRequest, Playlist, SearchResult, StationId,
         Track,
     },
+    resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
 
 #[derive(Debug, Parser)]
@@ -40,10 +41,10 @@ enum Command {
     /// Fetch one or more tracks by ID.
     Track {
         #[arg(required = true)]
-        ids: Vec<String>,
+        tracks: Vec<TrackRef>,
     },
     /// Fetch an album together with its tracks.
-    Album { id: String },
+    Album { album: AlbumRef },
     /// Show liked tracks from the current account.
     Likes {
         /// Maximum number of full tracks to fetch and print.
@@ -53,12 +54,12 @@ enum Command {
     /// List playlists belonging to the current account.
     Playlists,
     /// Fetch a playlist by owner and kind.
-    Playlist { owner: String, kind: String },
+    Playlist { playlist: PlaylistRef },
     /// Fetch an artist by ID.
-    Artist { id: String },
+    Artist { artist: ArtistRef },
     /// Fetch one page of an artist's tracks.
     ArtistTracks {
-        id: String,
+        artist: ArtistRef,
         #[arg(long, default_value_t = 0)]
         page: u32,
         #[arg(long, default_value_t = 20)]
@@ -66,7 +67,7 @@ enum Command {
     },
     /// Fetch one page of an artist's albums.
     ArtistAlbums {
-        id: String,
+        artist: ArtistRef,
         #[arg(long, default_value_t = 0)]
         page: u32,
         #[arg(long, default_value_t = 20)]
@@ -74,12 +75,12 @@ enum Command {
     },
     /// Fetch plain or synchronized lyrics.
     Lyrics {
-        id: String,
+        track: TrackRef,
         #[arg(long)]
         lrc: bool,
     },
     /// Fetch track recommendations for a playlist.
-    PlaylistRecommendations { owner: String, kind: String },
+    PlaylistRecommendations { playlist: PlaylistRef },
     /// List Rotor radio stations.
     Stations {
         #[arg(long, default_value = "ru")]
@@ -159,8 +160,8 @@ async fn run() -> Result<()> {
                 print_search(&mut output, &result)?;
             }
         }
-        Command::Track { ids } => {
-            let tracks = client.tracks(ids).await?;
+        Command::Track { tracks } => {
+            let tracks = client.tracks(tracks.iter().map(TrackRef::track_id)).await?;
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &tracks)?;
@@ -170,8 +171,8 @@ async fn run() -> Result<()> {
                 }
             }
         }
-        Command::Album { id } => {
-            let album = client.album_with_tracks(id).await?;
+        Command::Album { album } => {
+            let album = client.album_with_tracks(album.album_id()).await?;
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &album)?;
@@ -216,8 +217,8 @@ async fn run() -> Result<()> {
                 }
             }
         }
-        Command::Playlist { owner, kind } => {
-            let playlist = client.playlist(owner, kind).await?;
+        Command::Playlist { playlist } => {
+            let playlist = client.playlist(playlist.owner(), playlist.kind()).await?;
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &playlist)?;
@@ -225,8 +226,8 @@ async fn run() -> Result<()> {
                 print_playlist(&mut output, &playlist)?;
             }
         }
-        Command::Artist { id } => {
-            let artists = client.artists([id]).await?;
+        Command::Artist { artist } => {
+            let artists = client.artists([artist.artist_id()]).await?;
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &artists)?;
@@ -244,12 +245,12 @@ async fn run() -> Result<()> {
             }
         }
         Command::ArtistTracks {
-            id,
+            artist,
             page,
             page_size,
         } => {
             let result = client
-                .artist_tracks(id, PageRequest::new(page, page_size))
+                .artist_tracks(artist.artist_id(), PageRequest::new(page, page_size))
                 .await?;
             let mut output = io::stdout().lock();
             if cli.json {
@@ -261,12 +262,16 @@ async fn run() -> Result<()> {
             }
         }
         Command::ArtistAlbums {
-            id,
+            artist,
             page,
             page_size,
         } => {
             let result = client
-                .artist_albums(id, PageRequest::new(page, page_size), ArtistAlbumSort::Year)
+                .artist_albums(
+                    artist.artist_id(),
+                    PageRequest::new(page, page_size),
+                    ArtistAlbumSort::Year,
+                )
                 .await?;
             let mut output = io::stdout().lock();
             if cli.json {
@@ -277,10 +282,10 @@ async fn run() -> Result<()> {
                 }
             }
         }
-        Command::Lyrics { id, lrc } => {
+        Command::Lyrics { track, lrc } => {
             let metadata = client
                 .track_lyrics(
-                    id,
+                    track.track_id(),
                     if lrc {
                         LyricsFormat::Lrc
                     } else {
@@ -302,8 +307,10 @@ async fn run() -> Result<()> {
                 }
             }
         }
-        Command::PlaylistRecommendations { owner, kind } => {
-            let result = client.playlist_recommendations(owner, kind).await?;
+        Command::PlaylistRecommendations { playlist } => {
+            let result = client
+                .playlist_recommendations(playlist.owner(), playlist.kind())
+                .await?;
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &result)?;
