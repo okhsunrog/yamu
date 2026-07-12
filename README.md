@@ -85,8 +85,9 @@ The `downloads` feature implements the signed `get-file-info` negotiation and
 opens short-lived CDN response streams without forwarding the OAuth token:
 
 ```console
-cargo run -p ym-download -- <track-id>
-cargo run -p ym-download -- <track-id> --quality normal -o track.mp3
+cargo run -p ym-download -- track <track-id>
+cargo run -p ym-download -- track <track-id> --quality normal -o track.mp3
+cargo run -p ym-download -- playlist <owner> <kind> -o ./playlist
 ```
 
 The server can return a lower tier than requested. `ym-download` writes to a

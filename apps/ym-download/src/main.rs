@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use tokio::io::AsyncWriteExt;
 use yandex_music_api::{
     Client,
@@ -15,26 +15,48 @@ use yandex_music_api::{
 };
 
 #[derive(Debug, Parser)]
-#[command(about = "Download one Yandex Music track to an atomic local file")]
+#[command(about = "Download tracks and playlists from Yandex Music")]
 struct Cli {
     /// Credential profile created by ym-auth.
     #[arg(long, default_value = DEFAULT_PROFILE)]
     profile: String,
 
-    /// Highest requested quality; the server may return a lower tier.
-    #[arg(long, value_enum, default_value_t = Quality::Lossless)]
-    quality: Quality,
+    #[command(subcommand)]
+    command: Command,
+}
 
-    /// Destination path; defaults to `track-id.negotiated-extension`.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Replace an existing destination file.
-    #[arg(long)]
-    force: bool,
-
-    /// Numeric Yandex Music track ID.
-    track_id: String,
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Download one track.
+    Track {
+        /// Numeric Yandex Music track ID.
+        track_id: String,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, value_enum, default_value_t = Quality::Lossless)]
+        quality: Quality,
+        /// Destination path; defaults to `track-id.negotiated-extension`.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Replace an existing destination file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Download every track from a playlist in playlist order.
+    Playlist {
+        /// Playlist owner UID or login.
+        owner: String,
+        /// Playlist kind.
+        kind: String,
+        /// Destination directory; defaults to a sanitized playlist title.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Highest requested quality; the server may return a lower tier.
+        #[arg(long, value_enum, default_value_t = Quality::Lossless)]
+        quality: Quality,
+        /// Replace existing destination files.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -86,25 +108,40 @@ async fn run() -> Result<()> {
 
     let client = Client::new(credentials.access_token())?;
     let uid = current_account_uid(&client).await?;
-    let options = DownloadOptions {
-        quality: cli.quality.into(),
-        ..DownloadOptions::default()
-    };
-    let info = client
-        .download_info(uid, cli.track_id.as_str(), &options)
-        .await?;
-    if info.decryption_key.is_some() {
-        bail!("the server returned encrypted audio for a raw transport request");
+    match cli.command {
+        Command::Track {
+            track_id,
+            quality,
+            output,
+            force,
+        } => download_track(&client, uid, &track_id, quality, output, force).await,
+        Command::Playlist {
+            owner,
+            kind,
+            output,
+            quality,
+            force,
+        } => download_playlist(&client, uid, &owner, &kind, quality, output, force).await,
     }
+}
 
-    let destination = cli.output.unwrap_or_else(|| {
+async fn download_track(
+    client: &Client,
+    uid: Id,
+    track_id: &str,
+    quality: Quality,
+    output: Option<PathBuf>,
+    force: bool,
+) -> Result<()> {
+    let info = negotiate(client, uid, track_id, quality).await?;
+    let destination = output.unwrap_or_else(|| {
         PathBuf::from(format!(
             "{}.{}",
-            safe_file_stem(&cli.track_id),
+            safe_file_component(track_id),
             info.codec.file_extension()
         ))
     });
-    download_to_file(&client, &info, &destination, cli.force).await?;
+    download_to_file(client, &info, &destination, force).await?;
     println!(
         "saved {} ({} {}, {} kbps)",
         destination.display(),
@@ -113,6 +150,78 @@ async fn run() -> Result<()> {
         info.bitrate
     );
     Ok(())
+}
+
+async fn download_playlist(
+    client: &Client,
+    uid: Id,
+    owner: &str,
+    kind: &str,
+    quality: Quality,
+    output: Option<PathBuf>,
+    force: bool,
+) -> Result<()> {
+    let playlist = client.playlist(owner, kind).await?;
+    let directory = output.unwrap_or_else(|| {
+        PathBuf::from(safe_file_component(
+            playlist.title.as_deref().unwrap_or("playlist"),
+        ))
+    });
+    tokio::fs::create_dir_all(&directory).await?;
+    let width = playlist.tracks.len().to_string().len().max(2);
+
+    for (index, short) in playlist.tracks.iter().enumerate() {
+        let track = short
+            .track
+            .as_ref()
+            .with_context(|| format!("playlist entry {} has no full track metadata", index + 1))?;
+        let artists = track
+            .artists
+            .iter()
+            .filter_map(|artist| artist.name.as_deref())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let title = track.title.as_deref().unwrap_or("Untitled");
+        let info = negotiate(client, uid.clone(), &short.id.to_string(), quality).await?;
+        let stem = format!(
+            "{:0width$} - {} - {}",
+            index + 1,
+            safe_file_component(if artists.is_empty() {
+                "Unknown artist"
+            } else {
+                &artists
+            }),
+            safe_file_component(title),
+        );
+        let destination = directory.join(format!("{stem}.{}", info.codec.file_extension()));
+        download_to_file(client, &info, &destination, force).await?;
+        println!(
+            "[{}/{}] saved {} ({} {})",
+            index + 1,
+            playlist.tracks.len(),
+            destination.display(),
+            info.quality,
+            info.codec
+        );
+    }
+    Ok(())
+}
+
+async fn negotiate(
+    client: &Client,
+    uid: Id,
+    track_id: &str,
+    quality: Quality,
+) -> Result<DownloadInfo> {
+    let options = DownloadOptions {
+        quality: quality.into(),
+        ..DownloadOptions::default()
+    };
+    let info = client.download_info(uid, track_id, &options).await?;
+    if info.decryption_key.is_some() {
+        bail!("the server returned encrypted audio for a raw transport request");
+    }
+    Ok(info)
 }
 
 async fn current_account_uid(client: &Client) -> Result<Id> {
@@ -205,15 +314,26 @@ async fn download_url(client: &Client, url: &url::Url, temporary: &Path) -> Resu
     Ok(())
 }
 
-fn safe_file_stem(track_id: &str) -> String {
-    track_id
+fn safe_file_component(value: &str) -> String {
+    let sanitized: String = value
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
                 '_'
+            } else {
+                character
             }
         })
-        .collect()
+        .collect();
+    let trimmed = sanitized.trim_matches([' ', '.']);
+    if trimmed.is_empty() {
+        "untitled".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
