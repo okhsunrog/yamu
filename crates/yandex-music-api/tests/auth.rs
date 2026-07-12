@@ -92,6 +92,32 @@ async fn successful_poll_returns_redacted_token() {
 }
 
 #[tokio::test]
+async fn refreshes_oauth_token_with_expected_form() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string(
+            "grant_type=refresh_token&refresh_token=old-refresh&client_id=client-id&client_secret=client-secret",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 31_536_000,
+            "token_type": "bearer"
+        })))
+        .mount(&server)
+        .await;
+
+    let token = auth_for(&server)
+        .refresh_token("old-refresh")
+        .await
+        .unwrap();
+
+    assert_eq!(token.access_token(), "new-access");
+    assert_eq!(token.refresh_token(), Some("new-refresh"));
+}
+
+#[tokio::test]
 async fn non_pending_oauth_error_is_typed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

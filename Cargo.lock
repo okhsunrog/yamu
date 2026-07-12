@@ -1883,7 +1883,9 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "uuid",
+ "wiremock",
  "yandex-music-api",
  "zeroize",
 ]

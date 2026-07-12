@@ -77,6 +77,12 @@ impl Credentials {
             .map(|expires_at| Duration::from_secs(expires_at.saturating_sub(now))))
     }
 
+    pub fn age(&self) -> Result<Duration> {
+        Ok(Duration::from_secs(
+            unix_timestamp()?.saturating_sub(self.obtained_at),
+        ))
+    }
+
     pub fn is_expired(&self) -> Result<bool> {
         let now = unix_timestamp()?;
         Ok(self.expires_at.is_some_and(|expires_at| expires_at <= now))

@@ -35,6 +35,15 @@ pub enum Error {
 
     #[error("system clock is before the Unix epoch")]
     InvalidSystemClock,
+
+    #[error("credential profile {0:?} has no refresh token")]
+    MissingRefreshToken(String),
+
+    #[error(transparent)]
+    Api(#[from] yandex_music_api::Error),
+
+    #[error("profile lock worker failed: {0}")]
+    LockWorker(#[from] tokio::task::JoinError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

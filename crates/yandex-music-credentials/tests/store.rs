@@ -64,7 +64,33 @@ fn saved_paths_have_private_permissions() {
         .mode()
         & 0o777;
     let root_mode = fs::metadata(&directory.0).unwrap().permissions().mode() & 0o777;
+    let lock_mode = fs::metadata(store.lock_path("default").unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(file_mode, 0o600);
+    assert_eq!(lock_mode, 0o600);
     assert_eq!(directory_mode, 0o700);
     assert_eq!(root_mode, 0o700);
+}
+
+#[test]
+fn profile_lock_excludes_another_file_handle() {
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    let guard = store.lock_profile("default").unwrap();
+    let contender = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(guard.path())
+        .unwrap();
+
+    assert!(matches!(
+        contender.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(guard);
+    contender.try_lock().unwrap();
+    contender.unlock().unwrap();
 }

@@ -17,12 +17,22 @@ repository. Run `cargo run -p ym-auth -- path` to display its location.
 ```console
 cargo run -p ym-auth -- login
 cargo run -p ym-auth -- status
+cargo run -p ym-auth -- refresh
 ```
+
+File profiles are refreshed automatically when they are at least 90 days old
+or within 7 days of expiry. `ym-auth refresh` forces an immediate rotation.
+Environment overrides are never refreshed or persisted.
+
+Refresh, login writes and logout use an exclusive per-profile advisory lock.
+After acquiring it, refresh reloads the profile before contacting OAuth, so
+concurrent applications perform at most one token rotation.
 
 The file store uses `$XDG_STATE_HOME/yandex-music-rs/profiles/default.json` on
 Linux, normally `~/.local/state/yandex-music-rs/profiles/default.json`.
 Directories are mode `0700`, credential files are mode `0600`, and updates use
-an atomic same-directory rename. Tokens are redacted from `Debug` output.
+an atomic same-directory rename. Lock files are also mode `0600`. Tokens are
+redacted from `Debug` output.
 
 `YANDEX_MUSIC_TOKEN` can override the stored profile for a single process.
 

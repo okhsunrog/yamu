@@ -10,6 +10,6 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 yandex-music-api.workspace = true
 yandex-music-credentials.workspace = true

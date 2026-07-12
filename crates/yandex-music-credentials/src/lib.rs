@@ -2,8 +2,10 @@
 
 mod credentials;
 mod error;
+mod lifecycle;
 mod store;
 
 pub use credentials::Credentials;
 pub use error::{Error, Result};
-pub use store::{CredentialStore, DEFAULT_PROFILE, TOKEN_ENV};
+pub use lifecycle::{CredentialSource, RefreshPolicy, ResolvedCredentials};
+pub use store::{CredentialStore, DEFAULT_PROFILE, ProfileLock, TOKEN_ENV};

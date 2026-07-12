@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use yandex_music_api::{Client, auth::DeviceAuth};
-use yandex_music_credentials::{CredentialStore, Credentials, DEFAULT_PROFILE};
+use yandex_music_credentials::{CredentialStore, Credentials, DEFAULT_PROFILE, RefreshPolicy};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage shared Yandex Music credentials")]
@@ -24,6 +24,8 @@ enum Command {
     },
     /// Validate saved credentials against the account endpoint.
     Status,
+    /// Force rotation of the stored access/refresh token pair.
+    Refresh,
     /// Delete the saved credential profile.
     Logout,
     /// Print the credential file path without revealing its contents.
@@ -38,6 +40,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Login { force } => login(&store, &cli.profile, force).await,
         Command::Status => status(&store, &cli.profile).await,
+        Command::Refresh => refresh(&store, &cli.profile).await,
         Command::Logout => logout(&store, &cli.profile),
         Command::Path => {
             println!("{}", store.profile_path(&cli.profile)?.display());
@@ -88,9 +91,12 @@ async fn login(store: &CredentialStore, profile: &str, force: bool) -> Result<()
 }
 
 async fn status(store: &CredentialStore, profile: &str) -> Result<()> {
-    let credentials = store
-        .load_effective(profile)
+    let auth = DeviceAuth::new().context("failed to create OAuth client")?;
+    let resolved = store
+        .resolve(profile, &auth, RefreshPolicy::default())
+        .await
         .with_context(|| format!("failed to load profile {profile:?}"))?;
+    let credentials = &resolved.credentials;
     if credentials.is_expired()? {
         bail!("profile {profile:?} has expired; run `ym-auth login --force`");
     }
@@ -102,6 +108,8 @@ async fn status(store: &CredentialStore, profile: &str) -> Result<()> {
         .context("saved credentials were rejected by Yandex Music")?;
     let account = status.account.as_ref();
     println!("profile: {profile}");
+    println!("source: {}", resolved.source);
+    println!("refreshed now: {}", resolved.refreshed);
     println!(
         "account: {}",
         account
@@ -114,6 +122,27 @@ async fn status(store: &CredentialStore, profile: &str) -> Result<()> {
         None => println!("expires in: unknown"),
     }
     println!("refresh token: {}", credentials.refresh_token().is_some());
+    Ok(())
+}
+
+async fn refresh(store: &CredentialStore, profile: &str) -> Result<()> {
+    let auth = DeviceAuth::new().context("failed to create OAuth client")?;
+    let (credentials, refreshed) = store
+        .refresh_if_needed(profile, &auth, RefreshPolicy::force())
+        .await
+        .with_context(|| format!("failed to refresh profile {profile:?}"))?;
+    let client = Client::new(credentials.access_token())?;
+    client
+        .account_status()
+        .await
+        .context("refreshed credentials were rejected by Yandex Music")?;
+    println!("Profile {profile:?} refreshed: {refreshed}");
+    println!(
+        "expires in: {} days",
+        credentials
+            .expires_in()?
+            .map_or(0, |remaining| remaining.as_secs() / 86_400)
+    );
     Ok(())
 }
 

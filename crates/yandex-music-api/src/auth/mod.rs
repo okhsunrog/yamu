@@ -102,6 +102,28 @@ impl DeviceAuth {
         deserialize_oauth(body).map(Some)
     }
 
+    /// Exchanges a refresh token for a current access/refresh token pair.
+    pub async fn refresh_token(&self, refresh_token: &str) -> Result<OAuthToken> {
+        #[derive(Serialize)]
+        struct Form<'a> {
+            grant_type: &'static str,
+            refresh_token: &'a str,
+            client_id: &'a str,
+            client_secret: &'a str,
+        }
+
+        self.post_form(
+            "token",
+            &Form {
+                grant_type: "refresh_token",
+                refresh_token,
+                client_id: &self.client_id,
+                client_secret: &self.client_secret,
+            },
+        )
+        .await
+    }
+
     /// Runs Device Flow until the user confirms access or the code expires.
     pub async fn authorize<F>(&self, on_code: F) -> Result<OAuthToken>
     where

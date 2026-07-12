@@ -18,6 +18,32 @@ pub struct CredentialStore {
     root: PathBuf,
 }
 
+/// An exclusive advisory lock for one credential profile.
+pub struct ProfileLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl std::fmt::Debug for ProfileLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProfileLock")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProfileLock {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ProfileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 impl CredentialStore {
     pub fn open_default() -> Result<Self> {
         let dirs = ProjectDirs::from_path(PathBuf::from("yandex-music-rs"))
@@ -40,6 +66,34 @@ impl CredentialStore {
     pub fn profile_path(&self, profile: &str) -> Result<PathBuf> {
         validate_profile(profile)?;
         Ok(self.root.join("profiles").join(format!("{profile}.json")))
+    }
+
+    pub fn lock_path(&self, profile: &str) -> Result<PathBuf> {
+        validate_profile(profile)?;
+        Ok(self.root.join("profiles").join(format!("{profile}.lock")))
+    }
+
+    /// Acquires an exclusive cross-process advisory lock for a profile.
+    pub fn lock_profile(&self, profile: &str) -> Result<ProfileLock> {
+        let path = self.lock_path(profile)?;
+        let directory = path
+            .parent()
+            .expect("a profile lock path always has a parent directory");
+        self.prepare_directory(directory)?;
+
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(&path)
+            .map_err(|source| io_error(&path, source))?;
+        secure_file(&path, &file)?;
+        file.lock().map_err(|source| io_error(&path, source))?;
+        Ok(ProfileLock { file, path })
     }
 
     /// Loads an environment override, falling back to the persisted profile.
@@ -74,14 +128,21 @@ impl CredentialStore {
     }
 
     pub fn save(&self, profile: &str, credentials: &Credentials) -> Result<PathBuf> {
+        let _lock = self.lock_profile(profile)?;
+        self.save_unlocked(profile, credentials)
+    }
+
+    pub(crate) fn save_unlocked(
+        &self,
+        profile: &str,
+        credentials: &Credentials,
+    ) -> Result<PathBuf> {
         credentials.validate_version()?;
         let path = self.profile_path(profile)?;
         let directory = path
             .parent()
             .expect("a profile path always has a parent directory");
-        fs::create_dir_all(directory).map_err(|source| io_error(directory, source))?;
-        secure_directory(&self.root)?;
-        secure_directory(directory)?;
+        self.prepare_directory(directory)?;
 
         let temporary = temporary_path(directory, profile)?;
         let result = write_credentials(&temporary, credentials)
@@ -96,6 +157,7 @@ impl CredentialStore {
     }
 
     pub fn delete(&self, profile: &str) -> Result<bool> {
+        let _lock = self.lock_profile(profile)?;
         let path = self.profile_path(profile)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(true),
@@ -106,6 +168,12 @@ impl CredentialStore {
 
     pub fn exists(&self, profile: &str) -> Result<bool> {
         Ok(self.profile_path(profile)?.is_file())
+    }
+
+    fn prepare_directory(&self, directory: &Path) -> Result<()> {
+        fs::create_dir_all(directory).map_err(|source| io_error(directory, source))?;
+        secure_directory(&self.root)?;
+        secure_directory(directory)
     }
 }
 
@@ -199,6 +267,19 @@ fn check_file_permissions(path: &Path, file: &File) -> Result<()> {
             mode,
         })
     }
+}
+
+#[cfg(unix)]
+fn secure_file(path: &Path, file: &File) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|source| io_error(path, source))
+}
+
+#[cfg(not(unix))]
+fn secure_file(_path: &Path, _file: &File) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(not(unix))]

@@ -9,6 +9,7 @@ An unofficial asynchronous Rust client for the private Yandex Music API.
 
 - OAuth token authentication
 - OAuth Device Flow
+- OAuth refresh-token exchange
 - account status
 - batch track lookup
 - album lookup with tracks

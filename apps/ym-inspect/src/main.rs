@@ -5,9 +5,10 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use yandex_music_api::{
     Client,
+    auth::DeviceAuth,
     models::{Album, Id, Playlist, SearchResult, Track},
 };
-use yandex_music_credentials::{CredentialStore, DEFAULT_PROFILE};
+use yandex_music_credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy};
 
 #[derive(Debug, Parser)]
 #[command(about = "Read-only Yandex Music API inspection client")]
@@ -69,12 +70,17 @@ async fn main() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     let store = CredentialStore::open_default().context("failed to open credential store")?;
-    let credentials = store.load_effective(&cli.profile).with_context(|| {
-        format!(
-            "failed to load profile {:?}; run `ym-auth login`",
-            cli.profile
-        )
-    })?;
+    let auth = DeviceAuth::new().context("failed to create OAuth client")?;
+    let resolved = store
+        .resolve(&cli.profile, &auth, RefreshPolicy::default())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to load profile {:?}; run `ym-auth login`",
+                cli.profile
+            )
+        })?;
+    let credentials = resolved.credentials;
     if credentials.is_expired()? {
         bail!(
             "profile {:?} has expired; run `ym-auth login --force`",

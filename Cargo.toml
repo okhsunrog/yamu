@@ -21,7 +21,7 @@ reqwest = { version = "0.13", default-features = false, features = ["form", "jso
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = "1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
