@@ -1,10 +1,15 @@
 //! Media backend invoking an installed `ffmpeg` executable.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use tokio::process::Command;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+
+static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct FfmpegCli;
@@ -59,85 +64,85 @@ async fn write_m4a_metadata(
     metadata: &TrackMetadata,
     artwork: Option<Vec<u8>>,
 ) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| backend("M4A path must contain a file name"))?
-        .to_string_lossy();
-    let output_path = parent.join(format!(".{file_name}.metadata-{}.m4a", std::process::id()));
+    if path.file_name().is_none() {
+        return Err(backend("M4A path must contain a file name"));
+    }
+    let output_path = sibling_temporary(path, "metadata.m4a");
     let picture_path = artwork.as_ref().map(|picture| {
         let extension = match detect_mime(picture) {
             lofty::picture::MimeType::Png => "png",
             _ => "jpg",
         };
-        parent.join(format!(
-            ".{file_name}.cover-{}.{extension}",
-            std::process::id()
-        ))
+        sibling_temporary(path, &format!("cover.{extension}"))
     });
-    if let (Some(picture_path), Some(picture)) = (&picture_path, &artwork) {
-        tokio::fs::write(picture_path, picture).await?;
-    }
+    let result = async {
+        if let (Some(picture_path), Some(picture)) = (&picture_path, &artwork) {
+            tokio::fs::write(picture_path, picture).await?;
+        }
 
-    let mut command = Command::new("ffmpeg");
-    command
-        .arg("-nostdin")
-        .arg("-y")
-        .args(["-v", "error", "-i"])
-        .arg(path);
-    if let Some(picture_path) = &picture_path {
-        command.arg("-i").arg(picture_path);
-    }
-    command.args(["-map", "0:a:0", "-map_metadata", "-1", "-c:a", "copy"]);
-    if picture_path.is_some() {
-        command.args([
-            "-map",
-            "1:v:0",
-            "-c:v",
-            "copy",
-            "-disposition:v:0",
-            "attached_pic",
-        ]);
-    }
-    push_metadata(&mut command, "title", Some(&metadata.title));
-    push_metadata(&mut command, "artist", Some(&metadata.artist));
-    push_metadata(&mut command, "album", metadata.album.as_deref());
-    push_metadata(
-        &mut command,
-        "album_artist",
-        metadata.album_artist.as_deref(),
-    );
-    push_metadata(&mut command, "genre", metadata.genre.as_deref());
-    let year = metadata.year.map(|value| value.to_string());
-    push_metadata(&mut command, "date", year.as_deref());
-    let track = metadata.track_number.map(|value| value.to_string());
-    push_metadata(&mut command, "track", track.as_deref());
-    let disc = metadata.disc_number.map(|value| value.to_string());
-    push_metadata(&mut command, "disc", disc.as_deref());
-    push_metadata(
-        &mut command,
-        "lyrics",
-        metadata.lyrics.as_ref().map(|value| value.text.as_str()),
-    );
-    command
-        .args(["-movflags", "+faststart", "-f", "ipod"])
-        .arg(&output_path);
+        let mut command = Command::new("ffmpeg");
+        command
+            .arg("-nostdin")
+            .arg("-y")
+            .args(["-v", "error", "-i"])
+            .arg(path);
+        if let Some(picture_path) = &picture_path {
+            command.arg("-i").arg(picture_path);
+        }
+        command.args(["-map", "0:a:0", "-map_metadata", "-1", "-c:a", "copy"]);
+        if picture_path.is_some() {
+            command.args([
+                "-map",
+                "1:v:0",
+                "-c:v",
+                "copy",
+                "-disposition:v:0",
+                "attached_pic",
+            ]);
+        }
+        push_metadata(&mut command, "title", Some(&metadata.title));
+        push_metadata(&mut command, "artist", Some(&metadata.artist));
+        push_metadata(&mut command, "album", metadata.album.as_deref());
+        push_metadata(
+            &mut command,
+            "album_artist",
+            metadata.album_artist.as_deref(),
+        );
+        push_metadata(&mut command, "genre", metadata.genre.as_deref());
+        let year = metadata.year.map(|value| value.to_string());
+        push_metadata(&mut command, "date", year.as_deref());
+        let track = metadata.track_number.map(|value| value.to_string());
+        push_metadata(&mut command, "track", track.as_deref());
+        let disc = metadata.disc_number.map(|value| value.to_string());
+        push_metadata(&mut command, "disc", disc.as_deref());
+        push_metadata(
+            &mut command,
+            "lyrics",
+            metadata.lyrics.as_ref().map(|value| value.text.as_str()),
+        );
+        command
+            .args(["-movflags", "+faststart", "-f", "ipod"])
+            .arg(&output_path);
 
-    let output = command.output().await;
+        let output = command
+            .output()
+            .await
+            .map_err(|error| backend(format!("failed to run ffmpeg for M4A tags: {error}")))?;
+        ensure_success(output, "ffmpeg M4A metadata remux")?;
+        tokio::fs::File::open(&output_path)
+            .await?
+            .sync_all()
+            .await?;
+        replace_file(&output_path, path, true).await
+    }
+    .await;
     if let Some(picture_path) = &picture_path {
         let _ = tokio::fs::remove_file(picture_path).await;
     }
-    let output =
-        output.map_err(|error| backend(format!("failed to run ffmpeg for M4A tags: {error}")))?;
-    if let Err(error) = ensure_success(output, "ffmpeg M4A metadata remux") {
+    if result.is_err() {
         let _ = tokio::fs::remove_file(&output_path).await;
-        return Err(error);
     }
-    tokio::fs::File::open(&output_path)
-        .await?
-        .sync_all()
-        .await?;
-    replace_file(&output_path, path, true).await
+    result
 }
 
 async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<()> {
@@ -148,30 +153,34 @@ async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<
         )));
     }
     let temporary = sibling_temporary(destination, "remux.part");
-    let output = Command::new("ffmpeg")
-        .arg("-nostdin")
-        .args(["-v", "error", "-i"])
-        .arg(source)
-        .args([
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "0",
-            "-c:a",
-            "copy",
-            "-f",
-            "flac",
-        ])
-        .arg(&temporary)
-        .output()
-        .await
-        .map_err(|error| backend(format!("failed to run ffmpeg for FLAC remux: {error}")))?;
-    if let Err(error) = ensure_success(output, "ffmpeg FLAC remux") {
-        let _ = tokio::fs::remove_file(&temporary).await;
-        return Err(error);
+    let result = async {
+        let output = Command::new("ffmpeg")
+            .arg("-nostdin")
+            .args(["-v", "error", "-i"])
+            .arg(source)
+            .args([
+                "-map",
+                "0:a:0",
+                "-map_metadata",
+                "0",
+                "-c:a",
+                "copy",
+                "-f",
+                "flac",
+            ])
+            .arg(&temporary)
+            .output()
+            .await
+            .map_err(|error| backend(format!("failed to run ffmpeg for FLAC remux: {error}")))?;
+        ensure_success(output, "ffmpeg FLAC remux")?;
+        tokio::fs::File::open(&temporary).await?.sync_all().await?;
+        replace_file(&temporary, destination, replace).await
     }
-    tokio::fs::File::open(&temporary).await?.sync_all().await?;
-    replace_file(&temporary, destination, replace).await
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
 }
 
 async fn transcode_mp3(
@@ -187,32 +196,36 @@ async fn transcode_mp3(
         )));
     }
     let temporary = sibling_temporary(destination, "transcode.mp3");
-    let output = Command::new("ffmpeg")
-        .arg("-nostdin")
-        .args(["-v", "error", "-i"])
-        .arg(source)
-        .args([
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "-1",
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            &format!("{bitrate_kbps}k"),
-            "-f",
-            "mp3",
-        ])
-        .arg(&temporary)
-        .output()
-        .await
-        .map_err(|error| backend(format!("failed to run ffmpeg for MP3 transcode: {error}")))?;
-    if let Err(error) = ensure_success(output, "ffmpeg MP3 transcode") {
-        let _ = tokio::fs::remove_file(&temporary).await;
-        return Err(error);
+    let result = async {
+        let output = Command::new("ffmpeg")
+            .arg("-nostdin")
+            .args(["-v", "error", "-i"])
+            .arg(source)
+            .args([
+                "-map",
+                "0:a:0",
+                "-map_metadata",
+                "-1",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                &format!("{bitrate_kbps}k"),
+                "-f",
+                "mp3",
+            ])
+            .arg(&temporary)
+            .output()
+            .await
+            .map_err(|error| backend(format!("failed to run ffmpeg for MP3 transcode: {error}")))?;
+        ensure_success(output, "ffmpeg MP3 transcode")?;
+        tokio::fs::File::open(&temporary).await?.sync_all().await?;
+        replace_file(&temporary, destination, replace).await
     }
-    tokio::fs::File::open(&temporary).await?.sync_all().await?;
-    replace_file(&temporary, destination, replace).await
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
 }
 
 fn push_metadata(command: &mut Command, key: &str, value: Option<&str>) {
@@ -249,7 +262,8 @@ fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    parent.join(format!(".{name}.{suffix}-{}", std::process::id()))
+    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{name}.{suffix}-{}-{nonce}", std::process::id()))
 }
 
 fn backend(message: impl Into<String>) -> Error {

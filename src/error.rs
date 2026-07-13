@@ -10,6 +10,12 @@ pub enum Error {
     #[error("invalid base URL: {0}")]
     InvalidBaseUrl(#[from] url::ParseError),
 
+    #[error("base URL cannot be used for hierarchical API paths: {0}")]
+    NonHierarchicalBaseUrl(String),
+
+    #[error("invalid API path segment: {0:?}")]
+    InvalidPathSegment(String),
+
     #[error("failed to build the HTTP client: {0}")]
     BuildClient(reqwest::Error),
 

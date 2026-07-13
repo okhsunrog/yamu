@@ -39,8 +39,9 @@ impl Client {
             time_stamp: u64,
             sign: &'a str,
         }
-        self.get(
-            &format!("tracks/{numeric_track_id}/lyrics"),
+        let numeric_track_id = numeric_track_id.to_string();
+        self.get_segments(
+            ["tracks", numeric_track_id.as_str(), "lyrics"],
             &Query {
                 format: format.as_str(),
                 time_stamp: timestamp,
@@ -53,7 +54,7 @@ impl Client {
     /// Fetches lyric text without forwarding the OAuth token to object storage.
     pub async fn fetch_lyrics(&self, lyrics: &TrackLyrics) -> Result<String> {
         Ok(self
-            .http
+            .media_http
             .get(lyrics.download_url.clone())
             .send()
             .await?

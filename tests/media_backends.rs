@@ -50,10 +50,8 @@ async fn exercise_m4a_backend<B: MediaBackend>(backend: B) {
     tokio::fs::create_dir_all(&directory).await.unwrap();
     let audio = directory.join("track.m4a");
     let cover = directory.join("cover.jpg");
-    if !command_available("ffmpeg").await {
-        tokio::fs::remove_dir_all(directory).await.unwrap();
-        return;
-    }
+    require_command("ffmpeg").await;
+    require_command("ffprobe").await;
     run_ffmpeg(&[
         "-f",
         "lavfi",
@@ -144,10 +142,8 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
     tokio::fs::create_dir_all(&directory).await.unwrap();
     let source = directory.join("source.m4a");
     let destination = directory.join("track.flac");
-    if !command_available("ffmpeg").await {
-        tokio::fs::remove_dir_all(directory).await.unwrap();
-        return;
-    }
+    require_command("ffmpeg").await;
+    require_command("ffprobe").await;
     run_ffmpeg(&[
         "-f",
         "lavfi",
@@ -195,10 +191,8 @@ async fn exercise_mp3_transcode<B: MediaBackend>(backend: B) {
     tokio::fs::create_dir_all(&directory).await.unwrap();
     let source = directory.join("source.m4a");
     let destination = directory.join("track.mp3");
-    if !command_available("ffmpeg").await {
-        tokio::fs::remove_dir_all(directory).await.unwrap();
-        return;
-    }
+    require_command("ffmpeg").await;
+    require_command("ffprobe").await;
     run_ffmpeg(&[
         "-f",
         "lavfi",
@@ -238,12 +232,16 @@ async fn exercise_mp3_transcode<B: MediaBackend>(backend: B) {
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 
-async fn command_available(command: &str) -> bool {
-    tokio::process::Command::new(command)
+async fn require_command(command: &str) {
+    let available = tokio::process::Command::new(command)
         .arg("-version")
         .output()
         .await
-        .is_ok()
+        .is_ok_and(|output| output.status.success());
+    assert!(
+        available,
+        "{command} is required to execute the media backend tests"
+    );
 }
 
 async fn run_ffmpeg(arguments: &[&str]) {

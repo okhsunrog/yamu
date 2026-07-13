@@ -24,9 +24,10 @@ impl Client {
             library: Option<TracksList>,
         }
 
+        let user_id = user_id.into().to_string();
         let response: Response = self
-            .get(
-                &format!("users/{}/likes/tracks", user_id.into()),
+            .get_segments(
+                ["users", user_id.as_str(), "likes", "tracks"],
                 &Query {
                     revision: if_modified_since_revision,
                 },
@@ -49,14 +50,17 @@ impl Client {
 
     /// Returns playlist summaries belonging to a user.
     pub async fn user_playlists(&self, user_id: impl Into<Id>) -> Result<Vec<Playlist>> {
-        self.get(&format!("users/{}/playlists/list", user_id.into()), &())
+        let user_id = user_id.into().to_string();
+        self.get_segments(["users", user_id.as_str(), "playlists", "list"], &())
             .await
     }
 
     /// Returns one playlist, including its compact track entries.
     pub async fn playlist(&self, owner_id: impl Into<Id>, kind: impl Into<Id>) -> Result<Playlist> {
-        self.get(
-            &format!("users/{}/playlists/{}", owner_id.into(), kind.into()),
+        let owner_id = owner_id.into().to_string();
+        let kind = kind.into().to_string();
+        self.get_segments(
+            ["users", owner_id.as_str(), "playlists", kind.as_str()],
             &(),
         )
         .await

@@ -39,8 +39,9 @@ impl Client {
             #[serde(rename = "page-size")]
             page_size: u32,
         }
-        self.get(
-            &format!("artists/{}/tracks", artist_id.into()),
+        let artist_id = artist_id.into().to_string();
+        self.get_segments(
+            ["artists", artist_id.as_str(), "tracks"],
             &Query {
                 page: page.page(),
                 page_size: page.page_size(),
@@ -84,8 +85,9 @@ impl Client {
             #[serde(rename = "sort-by")]
             sort_by: &'a str,
         }
-        self.get(
-            &format!("artists/{}/direct-albums", artist_id.into()),
+        let artist_id = artist_id.into().to_string();
+        self.get_segments(
+            ["artists", artist_id.as_str(), "direct-albums"],
             &Query {
                 page: page.page(),
                 page_size: page.page_size(),

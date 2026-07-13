@@ -48,4 +48,6 @@ fn rejects_wrong_resource_and_foreign_hosts() {
             .parse::<AlbumRef>()
             .is_err()
     );
+    assert!("..".parse::<AlbumRef>().is_err());
+    assert!(PlaylistRef::new(".", "42").is_err());
 }

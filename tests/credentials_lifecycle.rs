@@ -86,6 +86,42 @@ async fn forced_refresh_rotates_and_persists_credentials() {
 }
 
 #[tokio::test]
+async fn refresh_keeps_previous_token_when_response_omits_rotation() {
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    store
+        .save(
+            "default",
+            &Credentials::from_oauth_token(&oauth_token("old-access", "old-refresh")).unwrap(),
+        )
+        .unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new-access",
+            "expires_in": 31_536_000,
+            "token_type": "bearer"
+        })))
+        .mount(&server)
+        .await;
+
+    let (credentials, refreshed) = store
+        .refresh_if_needed("default", &auth_for(&server), RefreshPolicy::force())
+        .await
+        .unwrap();
+
+    assert!(refreshed);
+    assert_eq!(credentials.access_token(), "new-access");
+    assert_eq!(credentials.refresh_token(), Some("old-refresh"));
+    assert_eq!(
+        store.load("default").unwrap().refresh_token(),
+        Some("old-refresh")
+    );
+}
+
+#[tokio::test]
 async fn fresh_credentials_do_not_contact_oauth() {
     let directory = TestDirectory::new();
     let store = CredentialStore::at(&directory.0);
@@ -104,6 +140,29 @@ async fn fresh_credentials_do_not_contact_oauth() {
 
     assert!(!refreshed);
     assert_eq!(credentials.access_token(), "access");
+}
+
+#[tokio::test]
+async fn aged_access_only_credentials_are_not_forced_into_refresh() {
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    store
+        .save(
+            "default",
+            &Credentials::from_access_token("long-lived-access").unwrap(),
+        )
+        .unwrap();
+    age_profile(&store);
+    let server = MockServer::start().await;
+
+    let (credentials, refreshed) = store
+        .refresh_if_needed("default", &auth_for(&server), RefreshPolicy::default())
+        .await
+        .unwrap();
+
+    assert!(!refreshed);
+    assert_eq!(credentials.access_token(), "long-lived-access");
+    assert_eq!(credentials.refresh_token(), None);
 }
 
 #[tokio::test]

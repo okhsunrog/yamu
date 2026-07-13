@@ -1,10 +1,15 @@
 //! In-process media backend linked against FFmpeg libraries.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use ffmpeg_next as av;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+
+static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Default)]
 pub struct Ffmpeg;
@@ -22,8 +27,12 @@ impl MediaBackend for Ffmpeg {
     ) -> Result<()> {
         tokio::task::spawn_blocking(move || {
             let output = sibling_temporary(&path, "metadata.m4a");
-            remux_audio(&path, &output, Some(&metadata), artwork.as_deref(), "ipod")?;
-            replace_file_blocking(&output, &path, true)
+            let result = remux_audio(&path, &output, Some(&metadata), artwork.as_deref(), "ipod")
+                .and_then(|()| replace_file_blocking(&output, &path, true));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&output);
+            }
+            result
         })
         .await?
     }
@@ -37,8 +46,12 @@ impl MediaBackend for Ffmpeg {
                 )));
             }
             let output = sibling_temporary(&destination, "remux.flac");
-            remux_audio(&source, &output, None, None, "flac")?;
-            replace_file_blocking(&output, &destination, replace)
+            let result = remux_audio(&source, &output, None, None, "flac")
+                .and_then(|()| replace_file_blocking(&output, &destination, replace));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&output);
+            }
+            result
         })
         .await?
     }
@@ -58,11 +71,12 @@ impl MediaBackend for Ffmpeg {
                 )));
             }
             let output = sibling_temporary(&destination, "transcode.mp3");
-            if let Err(error) = transcode_audio_mp3(&source, &output, bitrate_kbps) {
+            let result = transcode_audio_mp3(&source, &output, bitrate_kbps)
+                .and_then(|()| replace_file_blocking(&output, &destination, replace));
+            if result.is_err() {
                 let _ = std::fs::remove_file(&output);
-                return Err(error);
             }
-            replace_file_blocking(&output, &destination, replace)
+            result
         })
         .await?
     }
@@ -529,7 +543,8 @@ fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    parent.join(format!(".{name}.{}.{suffix}", std::process::id()))
+    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{name}.{}-{nonce}.{suffix}", std::process::id()))
 }
 
 fn av_error(context: &'static str) -> impl FnOnce(av::Error) -> Error {

@@ -49,10 +49,11 @@ impl Client {
             visibility: PlaylistVisibility,
         }
 
+        let user_id = user_id.into().to_string();
         let request = self
-            .request(
+            .request_segments(
                 Method::POST,
-                &format!("users/{}/playlists/create", user_id.into()),
+                ["users", user_id.as_str(), "playlists", "create"],
             )?
             .form(&Form {
                 title: title.as_ref(),
@@ -63,9 +64,17 @@ impl Client {
 
     /// Deletes a playlist owned by `user_id`.
     pub async fn delete_playlist(&self, user_id: impl Into<Id>, kind: impl Into<Id>) -> Result<()> {
-        let request = self.request(
+        let user_id = user_id.into().to_string();
+        let kind = kind.into().to_string();
+        let request = self.request_segments(
             Method::POST,
-            &format!("users/{}/playlists/{}/delete", user_id.into(), kind.into()),
+            [
+                "users",
+                user_id.as_str(),
+                "playlists",
+                kind.as_str(),
+                "delete",
+            ],
         )?;
         let result: String = self.send(request).await?;
         if result == "ok" {
@@ -124,12 +133,18 @@ impl Client {
             diff: String,
         }
 
-        let user_id = user_id.into();
+        let user_id = user_id.into().to_string();
         let kind = kind.into().to_string();
         let request = self
-            .request(
+            .request_segments(
                 Method::POST,
-                &format!("users/{user_id}/playlists/{kind}/change"),
+                [
+                    "users",
+                    user_id.as_str(),
+                    "playlists",
+                    kind.as_str(),
+                    "change",
+                ],
             )?
             .form(&Form {
                 kind: &kind,
@@ -165,10 +180,11 @@ impl Client {
         for track_id in track_ids {
             serializer.append_pair("track-ids", &track_id.into().to_string());
         }
+        let user_id = user_id.to_string();
         let request = self
-            .request(
+            .request_segments(
                 Method::POST,
-                &format!("users/{user_id}/likes/tracks/{action}"),
+                ["users", user_id.as_str(), "likes", "tracks", action],
             )?
             .header(
                 reqwest::header::CONTENT_TYPE,
@@ -185,10 +201,12 @@ impl Client {
         field: &str,
         value: &str,
     ) -> Result<Playlist> {
+        let user_id = user_id.to_string();
+        let kind = kind.to_string();
         let request = self
-            .request(
+            .request_segments(
                 Method::POST,
-                &format!("users/{user_id}/playlists/{kind}/{field}"),
+                ["users", user_id.as_str(), "playlists", kind.as_str(), field],
             )?
             .form(&[("value", value)]);
         self.send(request).await

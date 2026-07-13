@@ -14,12 +14,16 @@ impl Client {
         owner_id: impl Into<Id>,
         kind: impl Into<Id>,
     ) -> Result<PlaylistRecommendations> {
-        self.get(
-            &format!(
-                "users/{}/playlists/{}/recommendations",
-                owner_id.into(),
-                kind.into()
-            ),
+        let owner_id = owner_id.into().to_string();
+        let kind = kind.into().to_string();
+        self.get_segments(
+            [
+                "users",
+                owner_id.as_str(),
+                "playlists",
+                kind.as_str(),
+                "recommendations",
+            ],
             &(),
         )
         .await
@@ -44,7 +48,8 @@ impl Client {
     }
 
     pub async fn station_info(&self, station: &StationId) -> Result<Vec<StationResult>> {
-        self.get(&format!("rotor/station/{station}/info"), &())
+        let station = station.to_string();
+        self.get_segments(["rotor", "station", station.as_str(), "info"], &())
             .await
     }
 
@@ -59,8 +64,9 @@ impl Client {
             #[serde(skip_serializing_if = "Option::is_none")]
             queue: Option<String>,
         }
-        self.get(
-            &format!("rotor/station/{station}/tracks"),
+        let station = station.to_string();
+        self.get_segments(
+            ["rotor", "station", station.as_str(), "tracks"],
             &Query {
                 settings2: true,
                 queue: queue.map(|id| id.to_string()),

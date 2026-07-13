@@ -15,6 +15,21 @@ impl Client {
             .await
     }
 
+    pub(super) async fn get_segments<T, Q, I, S>(&self, segments: I, query: &Q) -> Result<T>
+    where
+        T: DeserializeOwned,
+        Q: Serialize + ?Sized,
+        I: IntoIterator<Item = S> + Clone,
+        S: AsRef<str>,
+    {
+        self.send_read(|| {
+            Ok(self
+                .request_segments(Method::GET, segments.clone())?
+                .query(query))
+        })
+        .await
+    }
+
     pub(super) async fn send_read<T, F>(&self, build_request: F) -> Result<T>
     where
         T: DeserializeOwned,
@@ -44,11 +59,41 @@ impl Client {
 
     pub(super) fn request(&self, method: Method, path: &str) -> Result<reqwest::RequestBuilder> {
         let url = self.base_url.join(path.trim_start_matches('/'))?;
+        Ok(self.request_url(method, url))
+    }
+
+    pub(super) fn request_segments<I, S>(
+        &self,
+        method: Method,
+        segments: I,
+    ) -> Result<reqwest::RequestBuilder>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut url = self.base_url.clone();
+        let printable_url = url.to_string();
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|()| Error::NonHierarchicalBaseUrl(printable_url))?;
+        path.pop_if_empty();
+        for segment in segments {
+            let segment = segment.as_ref();
+            if segment.is_empty() || matches!(segment, "." | "..") {
+                return Err(Error::InvalidPathSegment(segment.to_owned()));
+            }
+            path.push(segment);
+        }
+        drop(path);
+        Ok(self.request_url(method, url))
+    }
+
+    fn request_url(&self, method: Method, url: url::Url) -> reqwest::RequestBuilder {
         let mut request = self.http.request(method, url);
         if let Some(token) = &self.token {
             request = request.header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"));
         }
-        Ok(request)
+        request
     }
 
     pub(super) async fn send<T: DeserializeOwned>(
@@ -145,5 +190,45 @@ fn api_error_from_response(status: StatusCode, body: Value) -> Error {
         status,
         message,
         body: Some(body),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reqwest::Method;
+
+    use crate::{Client, Error};
+
+    #[test]
+    fn path_segments_cannot_rewrite_the_api_url() {
+        let client = Client::builder()
+            .base_url("https://example.test/api/")
+            .unwrap()
+            .token("secret")
+            .build()
+            .unwrap();
+        let request = client
+            .request_segments(Method::GET, ["albums", "../?query#fragment", "tracks"])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(request.url().host_str(), Some("example.test"));
+        assert_eq!(
+            request.url().as_str(),
+            "https://example.test/api/albums/..%2F%3Fquery%23fragment/tracks"
+        );
+        assert!(request.url().query().is_none());
+        assert!(request.url().fragment().is_none());
+    }
+
+    #[test]
+    fn rejects_dot_segments_in_dynamic_paths() {
+        let client = Client::builder().token("secret").build().unwrap();
+        let error = client
+            .request_segments(Method::GET, ["albums", "..", "tracks"])
+            .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidPathSegment(ref value) if value == ".."));
     }
 }

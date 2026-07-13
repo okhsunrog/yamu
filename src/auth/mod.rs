@@ -29,6 +29,14 @@ pub struct DeviceAuth {
     device_name: String,
 }
 
+/// Result of one OAuth Device Flow token poll.
+#[derive(Debug)]
+pub enum DeviceTokenPoll {
+    Pending,
+    SlowDown,
+    Authorized(OAuthToken),
+}
+
 impl fmt::Debug for DeviceAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceAuth")
@@ -71,7 +79,18 @@ impl DeviceAuth {
     }
 
     /// Polls once for a token. `None` means that confirmation is still pending.
+    ///
+    /// Callers that manage their own polling interval should use
+    /// [`Self::poll_device_token_event`] so they can honor `slow_down`.
     pub async fn poll_device_token(&self, device_code: &str) -> Result<Option<OAuthToken>> {
+        Ok(match self.poll_device_token_event(device_code).await? {
+            DeviceTokenPoll::Authorized(token) => Some(token),
+            DeviceTokenPoll::Pending | DeviceTokenPoll::SlowDown => None,
+        })
+    }
+
+    /// Polls once and preserves the RFC 8628 `slow_down` signal.
+    pub async fn poll_device_token_event(&self, device_code: &str) -> Result<DeviceTokenPoll> {
         #[derive(Serialize)]
         struct Form<'a> {
             grant_type: &'static str,
@@ -94,14 +113,16 @@ impl DeviceAuth {
         let status = response.status();
         let body = parse_json_response(response).await?;
 
-        if oauth_error_code(&body) == Some("authorization_pending") {
-            return Ok(None);
+        match oauth_error_code(&body) {
+            Some("authorization_pending") => return Ok(DeviceTokenPoll::Pending),
+            Some("slow_down") => return Ok(DeviceTokenPoll::SlowDown),
+            _ => {}
         }
         if !status.is_success() || oauth_error_code(&body).is_some() {
             return Err(oauth_error_from_response(status, body));
         }
 
-        deserialize_oauth(body).map(Some)
+        deserialize_oauth(body).map(DeviceTokenPoll::Authorized)
     }
 
     /// Exchanges a refresh token for a current access/refresh token pair.
@@ -135,20 +156,30 @@ impl DeviceAuth {
         on_code(&code);
 
         let timeout = Duration::from_secs(code.expires_in);
-        let interval = Duration::from_secs(code.interval.max(1));
+        let mut interval = Duration::from_secs(code.interval.max(1));
         let started = Instant::now();
 
         loop {
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(Error::DeviceAuthorizationTimedOut { timeout });
+            }
+            tokio::time::sleep(interval.min(remaining)).await;
             if started.elapsed() >= timeout {
                 return Err(Error::DeviceAuthorizationTimedOut { timeout });
             }
 
-            if let Some(token) = self.poll_device_token(&code.device_code).await? {
-                return Ok(token);
+            match self.poll_device_token_event(&code.device_code).await {
+                Ok(DeviceTokenPoll::Authorized(token)) => return Ok(token),
+                Ok(DeviceTokenPoll::Pending) => {}
+                Ok(DeviceTokenPoll::SlowDown) => {
+                    interval = interval.saturating_add(Duration::from_secs(5));
+                }
+                Err(error) if is_transient_poll_error(&error) => {
+                    interval = interval.saturating_mul(2);
+                }
+                Err(error) => return Err(error),
             }
-
-            let remaining = timeout.saturating_sub(started.elapsed());
-            tokio::time::sleep(interval.min(remaining)).await;
         }
     }
 
@@ -214,6 +245,9 @@ impl Default for DeviceAuthBuilder {
 impl DeviceAuthBuilder {
     pub fn base_url(mut self, base_url: impl AsRef<str>) -> Result<Self> {
         let mut url = Url::parse(base_url.as_ref())?;
+        if url.cannot_be_a_base() {
+            return Err(Error::NonHierarchicalBaseUrl(url.to_string()));
+        }
         if !url.path().ends_with('/') {
             url.set_path(&format!("{}/", url.path()));
         }
@@ -304,4 +338,8 @@ fn oauth_error_from_response(status: StatusCode, body: Value) -> Error {
         description,
         body: Some(body),
     }
+}
+
+fn is_transient_poll_error(error: &Error) -> bool {
+    matches!(error, Error::Http(error) if error.is_connect() || error.is_timeout())
 }

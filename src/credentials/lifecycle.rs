@@ -104,7 +104,7 @@ impl CredentialStore {
             .refresh_token()
             .ok_or_else(|| Error::MissingRefreshToken(profile.to_owned()))?;
         let token = auth.refresh_token(refresh_token).await?;
-        let refreshed = Credentials::from_oauth_token(&token)?;
+        let refreshed = Credentials::from_refreshed_oauth_token(&token, refresh_token)?;
         self.save_unlocked(profile, &refreshed)?;
         Ok((refreshed, true))
     }
@@ -117,7 +117,13 @@ impl CredentialStore {
 }
 
 fn needs_refresh(credentials: &Credentials, policy: RefreshPolicy) -> Result<bool> {
-    if policy.force || credentials.is_expired()? || credentials.age()? >= policy.max_age {
+    if policy.force {
+        return Ok(true);
+    }
+    if credentials.refresh_token().is_none() {
+        return Ok(false);
+    }
+    if credentials.is_expired()? || credentials.age()? >= policy.max_age {
         return Ok(true);
     }
     Ok(credentials

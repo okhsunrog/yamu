@@ -1,11 +1,15 @@
 use std::{
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::{sync::Semaphore, task::JoinSet};
 use yandex_music_api::{
@@ -23,6 +27,15 @@ mod state;
 
 use metadata::{ArtworkCache, EmbeddedLyrics, TrackMetadata, verify_audio_file, write_metadata};
 use state::{CollectionStateStore, StateStatus};
+
+const ENRICHMENT_VERSION: u32 = 1;
+static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EnrichmentMarker {
+    version: u32,
+    lyrics: Option<String>,
+}
 
 #[derive(Debug, Parser)]
 #[command(about = "Download tracks and collections from Yandex Music")]
@@ -364,7 +377,13 @@ async fn download_track(
     if tokio::fs::try_exists(&destination).await? && !force {
         match verify_audio_file(&destination, normalized_extension(&info)).await {
             Ok(()) => {
-                println!("verified existing {}", destination.display());
+                if enrichment_is_current(&destination, lyrics).await? {
+                    println!("verified existing {}", destination.display());
+                    return Ok(());
+                }
+                enrich_and_mark(client, track_id, &destination, &metadata, &artwork, lyrics)
+                    .await?;
+                println!("repaired enrichment for {}", destination.display());
                 return Ok(());
             }
             Err(error) => eprintln!(
@@ -373,8 +392,9 @@ async fn download_track(
             ),
         }
     }
+    clear_enrichment_marker(&destination).await?;
     download_normalized(client, &info, &destination, true, true).await?;
-    write_enriched_metadata(client, track_id, &destination, &metadata, &artwork, lyrics).await?;
+    enrich_and_mark(client, track_id, &destination, &metadata, &artwork, lyrics).await?;
     println!(
         "saved {} ({} {}, {} kbps)",
         destination.display(),
@@ -734,7 +754,9 @@ async fn download_jobs(
             if prune_tracked_audio(directory, &path).await? {
                 pruned += 1;
             }
+            state.forget_stale_path(&path).await?;
         }
+        state.flush().await?;
         println!("sync prune: {pruned} stale files removed");
     } else if !stale_paths.is_empty() {
         println!(
@@ -755,18 +777,7 @@ fn tracked_path(directory: &Path, path: &Path) -> PathBuf {
 
 async fn prune_tracked_audio(directory: &Path, path: &Path) -> Result<bool> {
     let candidate = tracked_path(directory, path);
-    if !tokio::fs::try_exists(&candidate).await? {
-        return Ok(false);
-    }
     let root = tokio::fs::canonicalize(directory).await?;
-    let candidate = tokio::fs::canonicalize(&candidate).await?;
-    if !candidate.starts_with(&root) {
-        bail!(
-            "refusing to prune tracked path outside {}: {}",
-            root.display(),
-            candidate.display()
-        );
-    }
     let supported_audio = candidate
         .extension()
         .and_then(|extension| extension.to_str())
@@ -777,28 +788,53 @@ async fn prune_tracked_audio(directory: &Path, path: &Path) -> Result<bool> {
             candidate.display()
         );
     }
+    let audio = checked_prunable_file(&root, &candidate, "tracked audio").await?;
     let mut sidecars = Vec::new();
     for extension in ["lrc", "txt"] {
         let sidecar = candidate.with_extension(extension);
-        if tokio::fs::try_exists(&sidecar).await? {
-            let sidecar = tokio::fs::canonicalize(sidecar).await?;
-            if !sidecar.starts_with(&root) {
-                bail!(
-                    "refusing to prune lyrics sidecar outside {}: {}",
-                    root.display(),
-                    sidecar.display()
-                );
-            }
+        if let Some(sidecar) = checked_prunable_file(&root, &sidecar, "lyrics sidecar").await? {
             sidecars.push(sidecar);
         }
     }
-    tokio::fs::remove_file(&candidate).await?;
-    println!("pruned {}", candidate.display());
+    let marker = enrichment_marker_path(&candidate)?;
+    if let Some(marker) = checked_prunable_file(&root, &marker, "enrichment marker").await? {
+        sidecars.push(marker);
+    }
+    let mut removed = false;
     for sidecar in sidecars {
         tokio::fs::remove_file(&sidecar).await?;
         println!("pruned {}", sidecar.display());
+        removed = true;
     }
-    Ok(true)
+    if let Some(audio) = audio {
+        tokio::fs::remove_file(&audio).await?;
+        println!("pruned {}", audio.display());
+        removed = true;
+    }
+    Ok(removed)
+}
+
+async fn checked_prunable_file(root: &Path, path: &Path, kind: &str) -> Result<Option<PathBuf>> {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "refusing to prune {kind} that is not a regular file: {}",
+            path.display()
+        );
+    }
+    let canonical = tokio::fs::canonicalize(path).await?;
+    if !canonical.starts_with(root) {
+        bail!(
+            "refusing to prune {kind} outside {}: {}",
+            root.display(),
+            canonical.display()
+        );
+    }
+    Ok(Some(canonical))
 }
 
 struct DownloadJob {
@@ -851,12 +887,28 @@ async fn download_collection_track(
         if tokio::fs::try_exists(&destination).await? && !force {
             match verify_audio_file(&destination, normalized_extension(&info)).await {
                 Ok(()) => {
-                    return Ok(DownloadStatus::Skipped { path: destination });
+                    if enrichment_is_current(&destination, lyrics).await? {
+                        return Ok(DownloadStatus::Skipped { path: destination });
+                    }
+                    enrich_and_mark(
+                        client,
+                        &job.track_id,
+                        &destination,
+                        &job.metadata,
+                        artwork,
+                        lyrics,
+                    )
+                    .await?;
+                    return Ok(DownloadStatus::Repaired {
+                        path: destination,
+                        reason: "metadata enrichment was incomplete".to_owned(),
+                    });
                 }
                 Err(error) => {
                     let reason = format!("{error:#}");
+                    clear_enrichment_marker(&destination).await?;
                     download_normalized(client, &info, &destination, true, false).await?;
-                    write_enriched_metadata(
+                    enrich_and_mark(
                         client,
                         &job.track_id,
                         &destination,
@@ -872,8 +924,9 @@ async fn download_collection_track(
                 }
             }
         }
+        clear_enrichment_marker(&destination).await?;
         download_normalized(client, &info, &destination, force, false).await?;
-        write_enriched_metadata(
+        enrich_and_mark(
             client,
             &job.track_id,
             &destination,
@@ -924,7 +977,7 @@ async fn current_account_uid(client: &Client) -> Result<Id> {
         .context("account status response does not contain a uid")
 }
 
-async fn write_enriched_metadata(
+async fn enrich_and_mark(
     client: &Client,
     track_id: &str,
     audio_path: &Path,
@@ -932,7 +985,109 @@ async fn write_enriched_metadata(
     artwork: &ArtworkCache,
     lyrics_format: Option<LyricsFormat>,
 ) -> Result<()> {
+    let saved_lyrics = write_enriched_metadata(
+        client,
+        track_id,
+        audio_path,
+        metadata,
+        artwork,
+        lyrics_format,
+    )
+    .await?;
+    write_enrichment_marker(audio_path, saved_lyrics).await
+}
+
+async fn enrichment_is_current(
+    audio_path: &Path,
+    requested_lyrics: Option<LyricsFormat>,
+) -> Result<bool> {
+    let marker = enrichment_marker_path(audio_path)?;
+    let bytes = match tokio::fs::read(marker).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let Ok(marker) = serde_json::from_slice::<EnrichmentMarker>(&bytes) else {
+        return Ok(false);
+    };
+    let requested_lyrics = requested_lyrics.map(|format| format.file_extension());
+    Ok(marker.version == ENRICHMENT_VERSION
+        && requested_lyrics.is_none_or(|requested| marker.lyrics.as_deref() == Some(requested)))
+}
+
+async fn write_enrichment_marker(
+    audio_path: &Path,
+    saved_lyrics: Option<LyricsFormat>,
+) -> Result<()> {
+    let marker = EnrichmentMarker {
+        version: ENRICHMENT_VERSION,
+        lyrics: saved_lyrics.map(|format| format.file_extension().to_owned()),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&marker)?;
+    bytes.push(b'\n');
+    write_atomic(&enrichment_marker_path(audio_path)?, &bytes).await
+}
+
+async fn clear_enrichment_marker(audio_path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(enrichment_marker_path(audio_path)?).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn enrichment_marker_path(audio_path: &Path) -> Result<PathBuf> {
+    let parent = audio_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = audio_path
+        .file_name()
+        .context("audio path must contain a file name")?
+        .to_string_lossy();
+    Ok(parent.join(format!(".{file_name}.ym-enriched.json")))
+}
+
+async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
+    let file_name = path
+        .file_name()
+        .context("atomic destination must contain a file name")?
+        .to_string_lossy();
+    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{file_name}.part-{}-{nonce}", std::process::id()));
+    let result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await?;
+        file.write_all(bytes).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+        #[cfg(windows)]
+        if tokio::fs::try_exists(path).await? {
+            tokio::fs::remove_file(path).await?;
+        }
+        tokio::fs::rename(&temporary, path).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
+}
+
+async fn write_enriched_metadata(
+    client: &Client,
+    track_id: &str,
+    audio_path: &Path,
+    metadata: &TrackMetadata,
+    artwork: &ArtworkCache,
+    lyrics_format: Option<LyricsFormat>,
+) -> Result<Option<LyricsFormat>> {
     let mut metadata = metadata.clone();
+    let mut saved_lyrics = None;
     if let Some(format) = lyrics_format {
         let fetched = async {
             let lyrics = client.track_lyrics(track_id, format).await?;
@@ -946,34 +1101,20 @@ async fn write_enriched_metadata(
                     text,
                     synchronized: format == LyricsFormat::Lrc,
                 });
+                saved_lyrics = Some(format);
             }
             Err(error) => {
                 eprintln!("lyrics unavailable for track {track_id}: {error}");
             }
         }
     }
-    write_metadata(audio_path, &metadata, artwork).await
+    write_metadata(audio_path, &metadata, artwork).await?;
+    Ok(saved_lyrics)
 }
 
 async fn write_lyrics_sidecar(audio_path: &Path, format: LyricsFormat, text: &str) -> Result<()> {
     let sidecar = audio_path.with_extension(format.file_extension());
-    let parent = sidecar.parent().unwrap_or_else(|| Path::new("."));
-    tokio::fs::create_dir_all(parent).await?;
-    let file_name = sidecar
-        .file_name()
-        .context("lyrics sidecar must contain a file name")?
-        .to_string_lossy();
-    let temporary = parent.join(format!(".{file_name}.part-{}", std::process::id()));
-    let mut file = tokio::fs::File::create(&temporary).await?;
-    file.write_all(text.as_bytes()).await?;
-    file.flush().await?;
-    file.sync_all().await?;
-    drop(file);
-    #[cfg(windows)]
-    if tokio::fs::try_exists(&sidecar).await? {
-        tokio::fs::remove_file(&sidecar).await?;
-    }
-    tokio::fs::rename(&temporary, &sidecar).await?;
+    write_atomic(&sidecar, text.as_bytes()).await?;
     println!("saved lyrics {}", sidecar.display());
     Ok(())
 }
@@ -1258,6 +1399,9 @@ mod tests {
         tokio::fs::write(&audio, b"tracked").await.unwrap();
         let lyrics = audio.with_extension("lrc");
         tokio::fs::write(&lyrics, b"[00:00]tracked").await.unwrap();
+        write_enrichment_marker(&audio, Some(LyricsFormat::Lrc))
+            .await
+            .unwrap();
         state
             .record(1, StateStatus::Downloaded, Some(&audio), None)
             .await
@@ -1276,13 +1420,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(plan.stale_paths, [PathBuf::from("01 - One - First.flac")]);
+        let retained = CollectionStateStore::open(&directory, "liked", "42", &[])
+            .await
+            .unwrap();
+        let retained_plan = CollectionStateStore::plan(&directory, "liked", "42", &[])
+            .await
+            .unwrap();
+        assert_eq!(retained_plan.stale_paths, plan.stale_paths);
         assert!(
             prune_tracked_audio(&directory, &plan.stale_paths[0])
                 .await
                 .unwrap()
         );
+        retained
+            .forget_stale_path(&plan.stale_paths[0])
+            .await
+            .unwrap();
+        retained.flush().await.unwrap();
         assert!(!tokio::fs::try_exists(&audio).await.unwrap());
         assert!(!tokio::fs::try_exists(&lyrics).await.unwrap());
+        assert!(
+            !tokio::fs::try_exists(enrichment_marker_path(&audio).unwrap())
+                .await
+                .unwrap()
+        );
+        assert!(
+            CollectionStateStore::plan(&directory, "liked", "42", &[])
+                .await
+                .unwrap()
+                .stale_paths
+                .is_empty()
+        );
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn prune_removes_orphaned_sidecars_when_audio_is_already_missing() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-orphan-prune-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("missing.flac");
+        let lyrics = audio.with_extension("lrc");
+        tokio::fs::write(&lyrics, b"orphaned").await.unwrap();
+        write_enrichment_marker(&audio, Some(LyricsFormat::Lrc))
+            .await
+            .unwrap();
+
+        assert!(
+            prune_tracked_audio(&directory, Path::new("missing.flac"))
+                .await
+                .unwrap()
+        );
+        assert!(!tokio::fs::try_exists(lyrics).await.unwrap());
+        assert!(
+            !tokio::fs::try_exists(enrichment_marker_path(&audio).unwrap())
+                .await
+                .unwrap()
+        );
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prune_rejects_symlinks_without_deleting_their_target() {
+        use std::os::unix::fs::symlink;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-symlink-prune-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let target = directory.join("keep.flac");
+        let link = directory.join("stale.flac");
+        tokio::fs::write(&target, b"keep").await.unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = prune_tracked_audio(&directory, Path::new("stale.flac"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert!(tokio::fs::try_exists(&target).await.unwrap());
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"keep");
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }
@@ -1315,6 +1546,39 @@ mod tests {
             names.push(entry.file_name());
         }
         assert_eq!(names, [std::ffi::OsString::from("track.lrc")]);
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn enrichment_marker_requires_the_requested_lyrics_format() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ym-download-enrichment-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("track.flac");
+
+        write_enrichment_marker(&audio, None).await.unwrap();
+        assert!(enrichment_is_current(&audio, None).await.unwrap());
+        assert!(
+            !enrichment_is_current(&audio, Some(LyricsFormat::Lrc))
+                .await
+                .unwrap()
+        );
+        write_enrichment_marker(&audio, Some(LyricsFormat::Lrc))
+            .await
+            .unwrap();
+        assert!(
+            enrichment_is_current(&audio, Some(LyricsFormat::Lrc))
+                .await
+                .unwrap()
+        );
+        assert!(enrichment_is_current(&audio, None).await.unwrap());
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }

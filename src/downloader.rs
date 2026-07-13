@@ -2,7 +2,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -19,6 +22,8 @@ use crate::{
     media::{self, MediaBackend},
     models::{AudioCodec, DownloadInfo},
 };
+
+static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Current stage of a download operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,7 +106,8 @@ impl CancellationToken {
         *self.sender.borrow()
     }
 
-    async fn cancelled(&self) {
+    /// Waits until cancellation is requested.
+    pub async fn cancelled(&self) {
         let mut receiver = self.sender.subscribe();
         while !*receiver.borrow_and_update() && receiver.changed().await.is_ok() {}
     }
@@ -220,10 +226,20 @@ impl<B: MediaBackend> Downloader<B> {
                 return Err(Error::Cancelled);
             }
             on_event(DownloadEvent::PhaseChanged(DownloadPhase::Finalizing));
-            replace_file(&normalized, &request.destination, request.replace).await?;
+            if let Err(error) =
+                replace_file(&normalized, &request.destination, request.replace).await
+            {
+                let _ = tokio::fs::remove_file(&normalized).await;
+                return Err(error);
+            }
         } else {
             on_event(DownloadEvent::PhaseChanged(DownloadPhase::Finalizing));
-            replace_file(&temporary, &request.destination, request.replace).await?;
+            if let Err(error) =
+                replace_file(&temporary, &request.destination, request.replace).await
+            {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(error);
+            }
         }
 
         Ok(DownloadResult {
@@ -381,7 +397,8 @@ fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    parent.join(format!(".{name}.{suffix}-{}", std::process::id()))
+    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(".{name}.{suffix}-{}-{nonce}", std::process::id()))
 }
 
 fn sibling_temporary_with_extension(destination: &Path, suffix: &str, extension: &str) -> PathBuf {
@@ -390,8 +407,9 @@ fn sibling_temporary_with_extension(destination: &Path, suffix: &str, extension:
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
+    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
-        ".{name}.{suffix}-{}.{extension}",
+        ".{name}.{suffix}-{}-{nonce}.{extension}",
         std::process::id()
     ))
 }

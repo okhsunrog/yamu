@@ -187,14 +187,21 @@ pub enum ParseResourceRefError {
     },
     #[error("empty {0} identifier")]
     EmptyId(&'static str),
+    #[error("invalid {kind} identifier {value:?}")]
+    InvalidId { kind: &'static str, value: String },
     #[error("invalid playlist reference {0:?}; expected owner:kind or a playlist URL")]
     InvalidPlaylist(String),
 }
 
 fn validate_id(kind: &'static str, value: String) -> Result<String, ParseResourceRefError> {
     let value = value.trim();
-    if value.is_empty() || value.contains(['/', '?', '#']) {
+    if value.is_empty() {
         Err(ParseResourceRefError::EmptyId(kind))
+    } else if matches!(value, "." | "..") || value.contains(['/', '?', '#']) {
+        Err(ParseResourceRefError::InvalidId {
+            kind,
+            value: value.to_owned(),
+        })
     } else {
         Ok(value.to_owned())
     }

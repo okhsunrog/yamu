@@ -1,8 +1,36 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
+    Mock, MockServer, Request, Respond, ResponseTemplate,
     matchers::{body_string, method, path},
 };
-use yandex_music_api::{Error, auth::DeviceAuth};
+use yandex_music_api::{
+    Error,
+    auth::{DeviceAuth, DeviceTokenPoll},
+};
+
+#[derive(Clone)]
+struct SlowDownOnce {
+    calls: Arc<AtomicUsize>,
+}
+
+impl Respond for SlowDownOnce {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "slow_down",
+                "error_description": "Poll less frequently"
+            }))
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-secret"
+            }))
+        }
+    }
+}
 
 fn auth_for(server: &MockServer) -> DeviceAuth {
     DeviceAuth::builder()
@@ -62,6 +90,26 @@ async fn pending_poll_returns_none() {
         .unwrap();
 
     assert!(token.is_none());
+}
+
+#[tokio::test]
+async fn slow_down_poll_is_preserved_for_interval_management() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "slow_down",
+            "error_description": "Poll less frequently"
+        })))
+        .mount(&server)
+        .await;
+
+    let event = auth_for(&server)
+        .poll_device_token_event("device-code")
+        .await
+        .unwrap();
+
+    assert!(matches!(event, DeviceTokenPoll::SlowDown));
 }
 
 #[tokio::test]
@@ -159,7 +207,7 @@ async fn authorize_calls_callback_and_returns_token() {
             "user_code": "USER-CODE",
             "verification_url": "https://oauth.yandex.ru/device",
             "expires_in": 300,
-            "interval": 5
+            "interval": 1
         })))
         .mount(&server)
         .await;
@@ -179,6 +227,37 @@ async fn authorize_calls_callback_and_returns_token() {
 
     assert_eq!(seen_code.as_deref(), Some("USER-CODE"));
     assert_eq!(token.access_token(), "access-secret");
+}
+
+#[tokio::test]
+async fn authorize_waits_before_polling_and_honors_slow_down() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/device/code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "device_code": "device-code",
+            "user_code": "USER-CODE",
+            "verification_url": "https://oauth.yandex.ru/device",
+            "expires_in": 30,
+            "interval": 1
+        })))
+        .mount(&server)
+        .await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(SlowDownOnce {
+            calls: Arc::clone(&calls),
+        })
+        .mount(&server)
+        .await;
+    let started = tokio::time::Instant::now();
+
+    let token = auth_for(&server).authorize(|_| {}).await.unwrap();
+
+    assert_eq!(token.access_token(), "access-secret");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(7));
 }
 
 #[tokio::test]

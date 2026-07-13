@@ -2,9 +2,10 @@ use std::{
     collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
+    time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 use yandex_music_api::{
     media::{self, ffmpeg_cli::FfmpegCli},
@@ -124,11 +125,14 @@ struct ArtworkCacheState {
 }
 
 const MAX_ARTWORK_CACHE_ENTRIES: usize = 32;
+const MAX_ARTWORK_BYTES: usize = 10 * 1024 * 1024;
 
 impl ArtworkCache {
     pub fn new() -> Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(15))
                 .user_agent(concat!(
                     env!("CARGO_PKG_NAME"),
                     "/",
@@ -146,15 +150,20 @@ impl ArtworkCache {
         if let Some(bytes) = self.state.lock().await.entries.get(url).cloned() {
             return Ok(Some(bytes.as_ref().clone()));
         }
-        let bytes = self
-            .http
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?
-            .to_vec();
+        let mut response = self.http.get(url).send().await?.error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_ARTWORK_BYTES as u64)
+        {
+            bail!("artwork response exceeds {MAX_ARTWORK_BYTES} bytes");
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if bytes.len().saturating_add(chunk.len()) > MAX_ARTWORK_BYTES {
+                bail!("artwork response exceeds {MAX_ARTWORK_BYTES} bytes");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         let mut state = self.state.lock().await;
         if !state.entries.contains_key(url) {
             while state.entries.len() >= MAX_ARTWORK_CACHE_ENTRIES {

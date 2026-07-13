@@ -192,3 +192,36 @@ async fn streams_cdn_audio_without_forwarding_oauth_token() {
     assert_eq!(&bytes[..], b"audio");
     assert!(requests[0].headers.get("authorization").is_none());
 }
+
+#[tokio::test]
+async fn media_stream_is_not_bounded_by_the_api_total_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/audio"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(100))
+                .set_body_bytes(b"audio"),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .unwrap()
+        .token("secret")
+        .timeout(Duration::from_millis(20))
+        .media_connect_timeout(Duration::from_secs(1))
+        .media_read_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+
+    let bytes = client
+        .open_audio_stream(&format!("{}/audio", server.uri()).parse().unwrap())
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    assert_eq!(&bytes[..], b"audio");
+}

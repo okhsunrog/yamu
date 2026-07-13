@@ -51,6 +51,17 @@ impl Credentials {
         })
     }
 
+    pub(crate) fn from_refreshed_oauth_token(
+        token: &OAuthToken,
+        previous_refresh_token: &str,
+    ) -> Result<Self> {
+        let mut credentials = Self::from_oauth_token(token)?;
+        if credentials.refresh_token.is_none() {
+            credentials.refresh_token = Some(previous_refresh_token.to_owned());
+        }
+        Ok(credentials)
+    }
+
     pub fn access_token(&self) -> &str {
         &self.access_token
     }

@@ -40,7 +40,7 @@ impl Client {
     ///
     /// This request deliberately does not forward the OAuth token to the CDN.
     pub async fn open_audio_stream(&self, url: &Url) -> Result<Response> {
-        self.http
+        self.media_http
             .get(url.clone())
             .send()
             .await?
@@ -150,7 +150,16 @@ fn sign_file_info(
 
 #[cfg(test)]
 mod tests {
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path, query_param},
+    };
+
     use super::sign_file_info;
+    use crate::{
+        Client,
+        models::{AudioCodec, DownloadOptions, DownloadQuality, Id},
+    };
 
     #[test]
     fn signs_known_file_info_request() {
@@ -164,5 +173,58 @@ mod tests {
             ),
             "Nm6It392fRGnljyGblG06Vq9OfnOmvKJj/esqr06yFg"
         );
+    }
+
+    #[tokio::test]
+    async fn constructs_the_complete_known_file_info_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/get-file-info"))
+            .and(query_param("ts", "1700000000"))
+            .and(query_param("trackId", "12345"))
+            .and(query_param("quality", "lossless"))
+            .and(query_param(
+                "codecs",
+                "flac,aac,he-aac,mp3,flac-mp4,aac-mp4,he-aac-mp4",
+            ))
+            .and(query_param("transports", "raw"))
+            .and(query_param(
+                "sign",
+                "Nm6It392fRGnljyGblG06Vq9OfnOmvKJj/esqr06yFg",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "downloadInfo": {
+                    "quality": "lossless",
+                    "codec": "flac",
+                    "bitrate": 1411,
+                    "urls": [format!("{}/audio", server.uri())]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Client::builder()
+            .base_url(server.uri())
+            .unwrap()
+            .token("secret")
+            .build()
+            .unwrap();
+        let options = DownloadOptions {
+            quality: DownloadQuality::Lossless,
+            codecs: vec![
+                AudioCodec::Flac,
+                AudioCodec::Aac,
+                AudioCodec::HeAac,
+                AudioCodec::Mp3,
+                AudioCodec::FlacMp4,
+                AudioCodec::AacMp4,
+                AudioCodec::HeAacMp4,
+            ],
+        };
+
+        client
+            .download_info_at(Id::from(42_u64), Id::from("12345"), &options, 1_700_000_000)
+            .await
+            .unwrap();
     }
 }
