@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -13,6 +13,7 @@ use crate::DownloadJob;
 
 const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = ".ym-download-state.json";
+const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct CollectionStateStore {
@@ -20,6 +21,7 @@ pub struct CollectionStateStore {
     path: PathBuf,
     state: Arc<Mutex<CollectionState>>,
     write_lock: Arc<Mutex<()>>,
+    last_saved: Arc<Mutex<Instant>>,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +133,7 @@ impl CollectionStateStore {
                 entries,
             })),
             write_lock: Arc::new(Mutex::new(())),
+            last_saved: Arc::new(Mutex::new(Instant::now())),
         };
         store.save().await?;
         Ok(store)
@@ -158,7 +161,23 @@ impl CollectionStateStore {
             });
             entry.error = error.map(str::to_owned);
         }
-        self.save().await
+        self.save_if_due().await
+    }
+
+    pub async fn flush(&self) -> Result<()> {
+        self.save().await?;
+        *self.last_saved.lock().await = Instant::now();
+        Ok(())
+    }
+
+    async fn save_if_due(&self) -> Result<()> {
+        let mut last_saved = self.last_saved.lock().await;
+        if last_saved.elapsed() < SAVE_INTERVAL {
+            return Ok(());
+        }
+        self.save().await?;
+        *last_saved = Instant::now();
+        Ok(())
     }
 
     async fn save(&self) -> Result<()> {

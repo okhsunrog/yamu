@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
@@ -110,8 +114,16 @@ impl TrackMetadata {
 #[derive(Clone)]
 pub struct ArtworkCache {
     http: reqwest::Client,
-    entries: Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>,
+    state: Arc<Mutex<ArtworkCacheState>>,
 }
+
+#[derive(Default)]
+struct ArtworkCacheState {
+    entries: HashMap<String, Arc<Vec<u8>>>,
+    insertion_order: VecDeque<String>,
+}
+
+const MAX_ARTWORK_CACHE_ENTRIES: usize = 32;
 
 impl ArtworkCache {
     pub fn new() -> Result<Self> {
@@ -123,7 +135,7 @@ impl ArtworkCache {
                     env!("CARGO_PKG_VERSION")
                 ))
                 .build()?,
-            entries: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(Mutex::new(ArtworkCacheState::default())),
         })
     }
 
@@ -131,7 +143,7 @@ impl ArtworkCache {
         let Some(url) = url else {
             return Ok(None);
         };
-        if let Some(bytes) = self.entries.lock().await.get(url).cloned() {
+        if let Some(bytes) = self.state.lock().await.entries.get(url).cloned() {
             return Ok(Some(bytes.as_ref().clone()));
         }
         let bytes = self
@@ -143,9 +155,18 @@ impl ArtworkCache {
             .bytes()
             .await?
             .to_vec();
-        self.entries
-            .lock()
-            .await
+        let mut state = self.state.lock().await;
+        if !state.entries.contains_key(url) {
+            while state.entries.len() >= MAX_ARTWORK_CACHE_ENTRIES {
+                let Some(oldest) = state.insertion_order.pop_front() else {
+                    break;
+                };
+                state.entries.remove(&oldest);
+            }
+            state.insertion_order.push_back(url.to_owned());
+        }
+        state
+            .entries
             .insert(url.to_owned(), Arc::new(bytes.clone()));
         Ok(Some(bytes))
     }

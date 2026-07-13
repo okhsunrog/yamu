@@ -13,6 +13,7 @@ use crate::{
     models::{DownloadInfo, DownloadOptions, Id},
 };
 
+// Public protocol constant extracted from an official Yandex Music client.
 const SIGN_KEY: &[u8] = b"7tvSmFbyf5hJnIHhCimDDD";
 const TRANSPORT: &str = "raw";
 
@@ -69,6 +70,7 @@ impl Client {
             .join(",");
         let quality = options.quality.to_string();
         let sign = sign_file_info(timestamp, &track_id, &quality, &codecs, TRANSPORT);
+        let user_id = user_id.to_string();
 
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -90,22 +92,26 @@ impl Client {
             message: Option<String>,
         }
 
-        let request = self
-            .request(Method::GET, "get-file-info")?
-            .header("x-yandex-music-client", "YandexMusicWebNext/1.0.0")
-            .header("x-yandex-music-without-invocation-info", "1")
-            .header("x-yandex-music-multi-auth-user-id", user_id.to_string())
-            .header(reqwest::header::ORIGIN, "https://music.yandex.ru")
-            .header(reqwest::header::REFERER, "https://music.yandex.ru/")
-            .query(&Query {
-                ts: timestamp,
-                track_id: &track_id,
-                quality: &quality,
-                codecs: &codecs,
-                transports: TRANSPORT,
-                sign: &sign,
-            });
-        let response: FileInfoResponse = self.send(request).await?;
+        let query = Query {
+            ts: timestamp,
+            track_id: &track_id,
+            quality: &quality,
+            codecs: &codecs,
+            transports: TRANSPORT,
+            sign: &sign,
+        };
+        let response: FileInfoResponse = self
+            .send_read(|| {
+                Ok(self
+                    .request(Method::GET, "get-file-info")?
+                    .header("x-yandex-music-client", "YandexMusicWebNext/1.0.0")
+                    .header("x-yandex-music-without-invocation-info", "1")
+                    .header("x-yandex-music-multi-auth-user-id", &user_id)
+                    .header(reqwest::header::ORIGIN, "https://music.yandex.ru")
+                    .header(reqwest::header::REFERER, "https://music.yandex.ru/")
+                    .query(&query))
+            })
+            .await?;
         match response.download_info {
             Some(info) if info.urls.is_empty() => Err(Error::DownloadUnavailable {
                 name: response

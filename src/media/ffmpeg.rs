@@ -113,9 +113,10 @@ fn remux_audio(
         None
     };
 
-    if let Some(metadata) = metadata {
-        output.set_metadata(metadata_dictionary(metadata));
-    }
+    output.set_metadata(match metadata {
+        Some(metadata) => metadata_dictionary(metadata),
+        None => input.metadata().to_owned(),
+    });
     let mut options = av::Dictionary::new();
     if output_format == "ipod" {
         options.set("movflags", "+faststart");

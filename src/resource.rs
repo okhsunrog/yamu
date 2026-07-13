@@ -206,9 +206,12 @@ fn music_url_segments(value: &str) -> Result<Option<Vec<String>>, ParseResourceR
         return Ok(None);
     }
     let url = Url::parse(value).map_err(|_| ParseResourceRefError::InvalidUrl(value.to_owned()))?;
-    let valid_host = url
-        .host_str()
-        .is_some_and(|host| host == "music.yandex.ru" || host.starts_with("music.yandex."));
+    let valid_host = url.host_str().is_some_and(|host| {
+        host == "music.yandex.ru"
+            || host
+                .strip_prefix("music.yandex.")
+                .is_some_and(|tld| !tld.is_empty() && !tld.contains('.'))
+    });
     if url.scheme() != "https" || !valid_host {
         return Err(ParseResourceRefError::InvalidUrl(value.to_owned()));
     }

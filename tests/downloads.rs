@@ -1,13 +1,44 @@
 #![cfg(feature = "downloads")]
 
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
+    Mock, MockServer, Request, Respond, ResponseTemplate,
     matchers::{header, method, path, query_param},
 };
 use yandex_music_api::{
-    Client, Error,
+    Client, Error, ReadRequestPolicy,
     models::{AudioCodec, DownloadOptions, DownloadQuality},
 };
+
+#[derive(Clone)]
+struct FailFileInfoOnce {
+    calls: Arc<AtomicUsize>,
+    audio_url: String,
+}
+
+impl Respond for FailFileInfoOnce {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            ResponseTemplate::new(503).set_body_string("temporarily unavailable")
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "downloadInfo": {
+                    "quality": "lossless",
+                    "codec": "flac",
+                    "bitrate": 1411,
+                    "urls": [self.audio_url]
+                }
+            }))
+        }
+    }
+}
 
 #[test]
 fn parses_download_quality_names_and_protocol_values() {
@@ -104,6 +135,39 @@ async fn maps_download_info_error_from_result_wrapper() {
         Error::DownloadUnavailable { ref name, ref message }
             if name == "track-download-info-error" && message == "not-allowed"
     ));
+}
+
+#[tokio::test]
+async fn applies_read_policy_to_download_info_requests() {
+    let server = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path("/get-file-info"))
+        .respond_with(FailFileInfoOnce {
+            calls: calls.clone(),
+            audio_url: format!("{}/audio", server.uri()),
+        })
+        .mount(&server)
+        .await;
+    let client = Client::builder()
+        .base_url(server.uri())
+        .unwrap()
+        .token("secret")
+        .read_request_policy(ReadRequestPolicy {
+            max_attempts: 2,
+            min_interval: Duration::ZERO,
+            initial_backoff: Duration::ZERO,
+        })
+        .build()
+        .unwrap();
+
+    let info = client
+        .download_info(42_u64, 10_u64, &DownloadOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(info.codec, AudioCodec::Flac);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

@@ -98,10 +98,18 @@ impl CredentialStore {
 
     /// Loads an environment override, falling back to the persisted profile.
     pub fn load_effective(&self, profile: &str) -> Result<Credentials> {
-        match std::env::var(TOKEN_ENV) {
-            Ok(token) if !token.is_empty() => Credentials::from_access_token(token),
-            _ => self.load(profile),
+        match Self::load_environment()? {
+            Some(credentials) => Ok(credentials),
+            None => self.load(profile),
         }
+    }
+
+    pub(crate) fn load_environment() -> Result<Option<Credentials>> {
+        std::env::var(TOKEN_ENV)
+            .ok()
+            .filter(|token| !token.is_empty())
+            .map(Credentials::from_access_token)
+            .transpose()
     }
 
     pub fn load(&self, profile: &str) -> Result<Credentials> {
@@ -259,7 +267,7 @@ fn check_file_permissions(path: &Path, file: &File) -> Result<()> {
         .permissions()
         .mode()
         & 0o777;
-    if mode == 0o600 {
+    if mode & !0o600 == 0 && mode & 0o400 != 0 {
         Ok(())
     } else {
         Err(Error::InsecurePermissions {

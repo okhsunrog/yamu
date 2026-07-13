@@ -26,10 +26,13 @@ repository = "https://github.com/okhsunrog/ya-music"
 
 [workspace.dependencies]
 anyhow = "1"
+aes = "0.9.1"
 base64 = "0.22.1"
 clap = { version = "4.6", features = ["derive"] }
 directories = "6"
+ctr = "0.10.1"
 hmac = "0.13.0"
+hex = "0.4.3"
 lofty = "0.24.0"
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format"] }
 imagesize = { version = "0.15.0", default-features = false, features = ["jpeg", "png"] }
@@ -51,6 +54,15 @@ default = ["oauth"]
 oauth = ["dep:uuid"]
 credentials = ["oauth", "dep:directories", "dep:zeroize", "tokio/rt"]
 downloads = ["dep:base64", "dep:hmac", "dep:sha2", "reqwest/stream"]
+downloader = [
+    "downloads",
+    "media",
+    "dep:aes",
+    "dep:ctr",
+    "dep:hex",
+    "tokio/io-util",
+    "tokio/macros",
+]
 lyrics = ["dep:base64", "dep:hmac", "dep:sha2"]
 media = ["dep:lofty", "tokio/fs", "tokio/rt"]
 media-ffmpeg-cli = ["media", "tokio/io-util", "tokio/process"]
@@ -58,8 +70,11 @@ media-ffmpeg = ["media", "dep:ffmpeg-next", "dep:imagesize"]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
+aes = { workspace = true, optional = true }
+ctr = { workspace = true, optional = true }
 directories = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 lofty = { workspace = true, optional = true }
 ffmpeg-next = { workspace = true, optional = true }
 imagesize = { workspace = true, optional = true }

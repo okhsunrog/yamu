@@ -11,10 +11,19 @@ impl Client {
         path: &str,
         query: &Q,
     ) -> Result<T> {
+        self.send_read(|| Ok(self.request(Method::GET, path)?.query(query)))
+            .await
+    }
+
+    pub(super) async fn send_read<T, F>(&self, build_request: F) -> Result<T>
+    where
+        T: DeserializeOwned,
+        F: Fn() -> Result<reqwest::RequestBuilder>,
+    {
         let max_attempts = self.read_policy.max_attempts.clamp(1, 10);
         for attempt in 1..=max_attempts {
             self.wait_for_read_slot().await;
-            let request = self.request(Method::GET, path)?.query(query);
+            let request = build_request()?;
             match self.send(request).await {
                 Err(error) if attempt < max_attempts && is_transient_read_error(&error) => {
                     let exponent = u32::from(attempt.saturating_sub(1).min(10));

@@ -19,6 +19,9 @@ The single library crate uses additive feature flags:
 - `oauth` (default) — Device Flow and token refresh primitives.
 - `credentials` — local profiles, locking and automatic refresh; enables `oauth`.
 - `downloads` — signed audio negotiation and CDN response streams.
+- `downloader` — reusable atomic transfer pipeline with byte progress,
+  cancellation, retries, streaming AES-CTR decryption, and normalization;
+  enables `downloads` and `media`.
 - `lyrics` — signed plain-text and synchronized lyrics retrieval.
 - `media` — backend-neutral audio tagging, normalization, and validation API.
 - `media-ffmpeg-cli` — desktop backend that invokes an installed `ffmpeg`.
@@ -185,14 +188,20 @@ AAC-in-MP4 remains `.m4a`, and MP3 remains `.mp3`. M4A metadata and its single
 attached cover are written by a lossless remux; FLAC and MP3 tags use Lofty.
 The workspace `ym-download` binary selects `media-ffmpeg-cli`; applications can
 select the in-process `media-ffmpeg` backend instead. Existing files are
-preserved unless `--force` is passed. Every completed
-or existing file is enriched with title, artist, album, album artist, year,
+preserved unless `--force` is passed. Every newly completed or repaired file is
+enriched with title, artist, album, album artist, year,
 genre, album track/disc position, and an embedded 600×600 front cover.
 
 Resume validates each existing container and its duration before trusting it;
 M4A validation also performs a complete audio decode so broken sample tables or
 AAC packets cannot pass a shallow container check. Truncated or corrupt files
-are atomically replaced. Playlist progress and the
-final per-track result are persisted after every completion in
+are atomically replaced. Playlist progress is checkpointed at most once per
+second and flushed at the end of the run in
 `.ym-download-state.json`. Transient negotiation failures and CDN transfers use
 bounded exponential retries, and every advertised CDN URL is attempted.
+
+The transfer, retry, decryption, normalization, progress, and cancellation
+logic is provided by the library's `downloader` feature and shared with the
+Android client. Frontends receive typed `DownloadEvent` values instead of
+parsing terminal output. Cancellation interrupts active HTTP requests and retry
+delays and removes the incomplete temporary file.

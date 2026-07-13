@@ -43,4 +43,9 @@ fn rejects_wrong_resource_and_foreign_hosts() {
             .is_err()
     );
     assert!("https://example.com/album/1".parse::<AlbumRef>().is_err());
+    assert!(
+        "https://music.yandex.evil.com/album/1"
+            .parse::<AlbumRef>()
+            .is_err()
+    );
 }

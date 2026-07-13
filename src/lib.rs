@@ -8,6 +8,8 @@ pub mod auth;
 mod client;
 #[cfg(feature = "credentials")]
 pub mod credentials;
+#[cfg(feature = "downloader")]
+pub mod downloader;
 mod error;
 #[cfg(feature = "media")]
 pub mod media;

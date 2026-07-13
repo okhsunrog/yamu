@@ -145,6 +145,8 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
         "flac",
         "-strict",
         "experimental",
+        "-metadata",
+        "title=Original title",
         "-f",
         "mp4",
         source.to_str().unwrap(),
@@ -161,16 +163,18 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
             "-select_streams",
             "a:0",
             "-show_entries",
-            "stream=codec_name",
+            "stream=codec_name:format_tags=title",
             "-of",
-            "default=nw=1:nk=1",
+            "json",
         ])
         .arg(&destination)
         .output()
         .await
         .unwrap();
     assert!(probe.status.success());
-    assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "flac");
+    let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert_eq!(probe["streams"][0]["codec_name"], "flac");
+    assert_eq!(probe["format"]["tags"]["title"], "Original title");
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 

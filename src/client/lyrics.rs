@@ -11,6 +11,7 @@ use crate::{
     models::{Id, LyricsFormat, TrackLyrics},
 };
 
+// Public protocol constant extracted from an official Yandex Music client.
 const LYRICS_SIGN_KEY: &[u8] = b"p93jhgh689SBReK6ghtw62";
 
 impl Client {

@@ -77,6 +77,23 @@ fn saved_paths_have_private_permissions() {
     assert_eq!(root_mode, 0o700);
 }
 
+#[cfg(unix)]
+#[test]
+fn loads_read_only_profile() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    let credentials = Credentials::from_access_token("access-secret").unwrap();
+    let path = store.save("default", &credentials).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+
+    assert_eq!(
+        store.load("default").unwrap().access_token(),
+        "access-secret"
+    );
+}
+
 #[test]
 fn profile_lock_excludes_another_file_handle() {
     let directory = TestDirectory::new();

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::auth::DeviceAuth;
 
-use super::{CredentialStore, Credentials, Error, ProfileLock, Result, TOKEN_ENV};
+use super::{CredentialStore, Credentials, Error, ProfileLock, Result};
 
 const DEFAULT_MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const DEFAULT_EXPIRY_MARGIN: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -66,11 +66,9 @@ impl CredentialStore {
         auth: &DeviceAuth,
         policy: RefreshPolicy,
     ) -> Result<ResolvedCredentials> {
-        if let Ok(token) = std::env::var(TOKEN_ENV)
-            && !token.is_empty()
-        {
+        if let Some(credentials) = Self::load_environment()? {
             return Ok(ResolvedCredentials {
-                credentials: Credentials::from_access_token(token)?,
+                credentials,
                 source: CredentialSource::Environment,
                 refreshed: false,
             });

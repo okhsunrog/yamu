@@ -2,7 +2,6 @@ use std::{
     io::{self, Write as _},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -13,7 +12,8 @@ use yandex_music_api::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
-    media::{MediaBackend, ffmpeg_cli::FfmpegCli},
+    downloader::{CancellationToken, DownloadEvent, DownloadRequest, Downloader},
+    media::ffmpeg_cli::FfmpegCli,
     models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Track},
     resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
@@ -364,15 +364,6 @@ async fn download_track(
     if tokio::fs::try_exists(&destination).await? && !force {
         match verify_audio_file(&destination, normalized_extension(&info)).await {
             Ok(()) => {
-                write_enriched_metadata(
-                    client,
-                    track_id,
-                    &destination,
-                    &metadata,
-                    &artwork,
-                    lyrics,
-                )
-                .await?;
                 println!("verified existing {}", destination.display());
                 return Ok(());
             }
@@ -723,6 +714,7 @@ async fn download_jobs(
             }
         }
     }
+    state.flush().await?;
 
     failures.sort_by_key(|failure| failure.0);
     let width = total.to_string().len().max(2);
@@ -859,15 +851,6 @@ async fn download_collection_track(
         if tokio::fs::try_exists(&destination).await? && !force {
             match verify_audio_file(&destination, normalized_extension(&info)).await {
                 Ok(()) => {
-                    write_enriched_metadata(
-                        client,
-                        &job.track_id,
-                        &destination,
-                        &job.metadata,
-                        artwork,
-                        lyrics,
-                    )
-                    .await?;
                     return Ok(DownloadStatus::Skipped { path: destination });
                 }
                 Err(error) => {
@@ -926,21 +909,10 @@ async fn negotiate(
         quality,
         ..DownloadOptions::default()
     };
-    let mut attempt = 1_u8;
-    let info = loop {
-        match client.download_info(uid.clone(), track_id, &options).await {
-            Ok(info) => break info,
-            Err(error) if attempt < 3 && is_transient_api_error(&error) => {
-                tokio::time::sleep(retry_delay(attempt)).await;
-                attempt += 1;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
-    if info.decryption_key.is_some() {
-        bail!("the server returned encrypted audio for a raw transport request");
-    }
-    Ok(info)
+    client
+        .download_info(uid, track_id, &options)
+        .await
+        .map_err(Into::into)
 }
 
 async fn current_account_uid(client: &Client) -> Result<Id> {
@@ -1006,47 +978,6 @@ async fn write_lyrics_sidecar(audio_path: &Path, format: LyricsFormat, text: &st
     Ok(())
 }
 
-async fn download_to_file(
-    client: &Client,
-    info: &DownloadInfo,
-    destination: &Path,
-    force: bool,
-    show_progress: bool,
-) -> Result<()> {
-    if tokio::fs::try_exists(destination).await? && !force {
-        bail!(
-            "destination {} already exists; pass --force to replace it",
-            destination.display()
-        );
-    }
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = destination
-        .file_name()
-        .context("destination must contain a file name")?
-        .to_string_lossy();
-    let temporary = parent.join(format!(".{file_name}.part-{}", std::process::id()));
-    let _ = tokio::fs::remove_file(&temporary).await;
-
-    let result = try_download_urls(client, info, &temporary, show_progress).await;
-    if let Err(error) = result {
-        let _ = tokio::fs::remove_file(&temporary).await;
-        return Err(error);
-    }
-    #[cfg(windows)]
-    if force && tokio::fs::try_exists(destination).await? {
-        tokio::fs::remove_file(destination).await?;
-    }
-    tokio::fs::rename(&temporary, destination)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to move completed download to {}",
-                destination.display()
-            )
-        })?;
-    Ok(())
-}
-
 async fn download_normalized(
     client: &Client,
     info: &DownloadInfo,
@@ -1054,34 +985,33 @@ async fn download_normalized(
     force: bool,
     show_progress: bool,
 ) -> Result<()> {
-    if matches!(info.codec, yandex_music_api::models::AudioCodec::FlacMp4) {
-        let source = sibling_temporary(destination, "source.m4a");
-        let result = async {
-            download_to_file(client, info, &source, true, show_progress).await?;
-            remux_flac(&source, destination, force).await
-        }
-        .await;
-        let _ = tokio::fs::remove_file(&source).await;
-        result
-    } else {
-        download_to_file(client, info, destination, force, show_progress).await
+    let downloader = Downloader::new(client.clone(), FfmpegCli);
+    downloader
+        .download(
+            DownloadRequest {
+                info: info.clone(),
+                destination: destination.to_owned(),
+                replace: force,
+            },
+            CancellationToken::new(),
+            |event| {
+                if !show_progress {
+                    return;
+                }
+                if let DownloadEvent::Progress { downloaded, total } = event {
+                    match total {
+                        Some(total) => eprint!("\r{downloaded}/{total} bytes"),
+                        None => eprint!("\r{downloaded} bytes"),
+                    }
+                    let _ = io::stderr().flush();
+                }
+            },
+        )
+        .await?;
+    if show_progress {
+        eprintln!();
     }
-}
-
-async fn remux_flac(source: &Path, destination: &Path, force: bool) -> Result<()> {
-    FfmpegCli
-        .remux_flac(source.to_owned(), destination.to_owned(), force)
-        .await
-        .map_err(Into::into)
-}
-
-fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    parent.join(format!(".{name}.{suffix}-{}", std::process::id()))
+    Ok(())
 }
 
 fn normalized_extension(info: &DownloadInfo) -> &'static str {
@@ -1108,105 +1038,6 @@ fn validate_output_extension(mut output: PathBuf, info: &DownloadInfo) -> Result
         }
         Some(_) => Ok(output),
     }
-}
-
-async fn try_download_urls(
-    client: &Client,
-    info: &DownloadInfo,
-    temporary: &Path,
-    show_progress: bool,
-) -> Result<()> {
-    let mut failures = Vec::new();
-    for url in &info.urls {
-        for attempt in 1..=3 {
-            match download_url(client, url, temporary, show_progress).await {
-                Ok(()) => return Ok(()),
-                Err(error) if attempt < 3 && is_transient_download_error(&error) => {
-                    failures.push(format!("attempt {attempt}: {error}"));
-                    tokio::time::sleep(retry_delay(attempt)).await;
-                }
-                Err(error) => {
-                    failures.push(format!("attempt {attempt}: {error}"));
-                    break;
-                }
-            }
-        }
-    }
-    bail!(
-        "all {} CDN URLs failed: {}",
-        info.urls.len(),
-        failures.join("; ")
-    )
-}
-
-fn retry_delay(attempt: u8) -> Duration {
-    Duration::from_millis(250 * (1_u64 << (attempt - 1)))
-}
-
-fn is_transient_api_error(error: &yandex_music_api::Error) -> bool {
-    match error {
-        yandex_music_api::Error::Http(error) => {
-            error.is_connect()
-                || error.is_timeout()
-                || error.status().is_some_and(|status| {
-                    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-                })
-        }
-        yandex_music_api::Error::Api { status, .. } => {
-            *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-        }
-        _ => false,
-    }
-}
-
-fn is_transient_download_error(error: &anyhow::Error) -> bool {
-    if let Some(error) = error.downcast_ref::<yandex_music_api::Error>() {
-        return is_transient_api_error(error);
-    }
-    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-        matches!(
-            error.kind(),
-            std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::ConnectionRefused
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::Interrupted
-                | std::io::ErrorKind::TimedOut
-                | std::io::ErrorKind::UnexpectedEof
-        )
-    })
-}
-
-async fn download_url(
-    client: &Client,
-    url: &url::Url,
-    temporary: &Path,
-    show_progress: bool,
-) -> Result<()> {
-    let mut response = client.open_audio_stream(url).await?;
-    let total = response.content_length();
-    let mut file = tokio::fs::File::create(temporary).await?;
-    let mut downloaded = 0_u64;
-    let mut last_progress = Instant::now() - Duration::from_secs(1);
-
-    while let Some(chunk) = response.chunk().await? {
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
-        let finished = total.is_some_and(|total| downloaded >= total);
-        if show_progress && (finished || last_progress.elapsed() >= Duration::from_millis(200)) {
-            match total {
-                Some(total) => eprint!("\r{downloaded}/{total} bytes"),
-                None => eprint!("\r{downloaded} bytes"),
-            }
-            io::stderr().flush()?;
-            last_progress = Instant::now();
-        }
-    }
-    file.flush().await?;
-    file.sync_all().await?;
-    if show_progress {
-        eprintln!();
-    }
-    Ok(())
 }
 
 fn safe_file_component(value: &str) -> String {
@@ -1431,6 +1262,15 @@ mod tests {
             .record(1, StateStatus::Downloaded, Some(&audio), None)
             .await
             .unwrap();
+        let before_flush = tokio::fs::read_to_string(directory.join(".ym-download-state.json"))
+            .await
+            .unwrap();
+        assert!(before_flush.contains("\"status\": \"pending\""));
+        state.flush().await.unwrap();
+        let after_flush = tokio::fs::read_to_string(directory.join(".ym-download-state.json"))
+            .await
+            .unwrap();
+        assert!(after_flush.contains("\"status\": \"downloaded\""));
 
         let plan = CollectionStateStore::plan(&directory, "liked", "42", &[])
             .await
