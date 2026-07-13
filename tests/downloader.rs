@@ -47,6 +47,17 @@ impl MediaBackend for TestBackend {
         Ok(())
     }
 
+    async fn transcode_mp3(
+        &self,
+        source: PathBuf,
+        destination: PathBuf,
+        _bitrate_kbps: u32,
+        _replace: bool,
+    ) -> media::Result<()> {
+        tokio::fs::copy(source, destination).await?;
+        Ok(())
+    }
+
     async fn verify_m4a(&self, _path: PathBuf) -> media::Result<()> {
         Ok(())
     }

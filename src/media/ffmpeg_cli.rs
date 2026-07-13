@@ -27,6 +27,16 @@ impl MediaBackend for FfmpegCli {
         remux_flac(&source, &destination, replace).await
     }
 
+    async fn transcode_mp3(
+        &self,
+        source: PathBuf,
+        destination: PathBuf,
+        bitrate_kbps: u32,
+        replace: bool,
+    ) -> Result<()> {
+        transcode_mp3(&source, &destination, bitrate_kbps, replace).await
+    }
+
     async fn verify_m4a(&self, path: PathBuf) -> Result<()> {
         let output = Command::new("ffmpeg")
             .arg("-nostdin")
@@ -157,6 +167,47 @@ async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<
         .await
         .map_err(|error| backend(format!("failed to run ffmpeg for FLAC remux: {error}")))?;
     if let Err(error) = ensure_success(output, "ffmpeg FLAC remux") {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+    tokio::fs::File::open(&temporary).await?.sync_all().await?;
+    replace_file(&temporary, destination, replace).await
+}
+
+async fn transcode_mp3(
+    source: &Path,
+    destination: &Path,
+    bitrate_kbps: u32,
+    replace: bool,
+) -> Result<()> {
+    if tokio::fs::try_exists(destination).await? && !replace {
+        return Err(backend(format!(
+            "destination {} already exists",
+            destination.display()
+        )));
+    }
+    let temporary = sibling_temporary(destination, "transcode.mp3");
+    let output = Command::new("ffmpeg")
+        .arg("-nostdin")
+        .args(["-v", "error", "-i"])
+        .arg(source)
+        .args([
+            "-map",
+            "0:a:0",
+            "-map_metadata",
+            "-1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            &format!("{bitrate_kbps}k"),
+            "-f",
+            "mp3",
+        ])
+        .arg(&temporary)
+        .output()
+        .await
+        .map_err(|error| backend(format!("failed to run ffmpeg for MP3 transcode: {error}")))?;
+    if let Err(error) = ensure_success(output, "ffmpeg MP3 transcode") {
         let _ = tokio::fs::remove_file(&temporary).await;
         return Err(error);
     }

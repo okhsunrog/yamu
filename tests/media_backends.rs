@@ -33,6 +33,18 @@ async fn linked_backend_normalizes_flac_in_mp4() {
     exercise_flac_remux(Ffmpeg).await;
 }
 
+#[cfg(feature = "media-ffmpeg-cli")]
+#[tokio::test]
+async fn cli_backend_transcodes_aac_to_mp3() {
+    exercise_mp3_transcode(FfmpegCli).await;
+}
+
+#[cfg(feature = "media-ffmpeg")]
+#[tokio::test]
+async fn linked_backend_transcodes_aac_to_mp3() {
+    exercise_mp3_transcode(Ffmpeg).await;
+}
+
 async fn exercise_m4a_backend<B: MediaBackend>(backend: B) {
     let directory = temporary_directory(backend.name());
     tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -175,6 +187,54 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
     let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
     assert_eq!(probe["streams"][0]["codec_name"], "flac");
     assert_eq!(probe["format"]["tags"]["title"], "Original title");
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+async fn exercise_mp3_transcode<B: MediaBackend>(backend: B) {
+    let directory = temporary_directory(backend.name());
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    let source = directory.join("source.m4a");
+    let destination = directory.join("track.mp3");
+    if !command_available("ffmpeg").await {
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+        return;
+    }
+    run_ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=0.2",
+        "-c:a",
+        "aac",
+        "-f",
+        "ipod",
+        source.to_str().unwrap(),
+    ])
+    .await;
+    backend
+        .transcode_mp3(source, destination.clone(), 320, false)
+        .await
+        .unwrap();
+    verify_audio_file(&backend, &destination, "mp3")
+        .await
+        .unwrap();
+    let probe = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(&destination)
+        .output()
+        .await
+        .unwrap();
+    assert!(probe.status.success());
+    assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "mp3");
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 

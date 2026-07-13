@@ -43,6 +43,30 @@ impl MediaBackend for Ffmpeg {
         .await?
     }
 
+    async fn transcode_mp3(
+        &self,
+        source: PathBuf,
+        destination: PathBuf,
+        bitrate_kbps: u32,
+        replace: bool,
+    ) -> Result<()> {
+        tokio::task::spawn_blocking(move || {
+            if destination.exists() && !replace {
+                return Err(backend(format!(
+                    "destination {} already exists",
+                    destination.display()
+                )));
+            }
+            let output = sibling_temporary(&destination, "transcode.mp3");
+            if let Err(error) = transcode_audio_mp3(&source, &output, bitrate_kbps) {
+                let _ = std::fs::remove_file(&output);
+                return Err(error);
+            }
+            replace_file_blocking(&output, &destination, replace)
+        })
+        .await?
+    }
+
     async fn verify_m4a(&self, path: PathBuf) -> Result<()> {
         tokio::task::spawn_blocking(move || decode_audio(&path)).await?
     }
@@ -191,6 +215,258 @@ fn decode_audio(path: &Path) -> Result<()> {
         return Err(backend("M4A decoder produced no audio frames"));
     }
     Ok(())
+}
+
+struct AudioTranscoder {
+    input_index: usize,
+    decoder: av::decoder::Audio,
+    encoder: av::encoder::Audio,
+    filter: av::filter::Graph,
+    encoder_time_base: av::Rational,
+    output_time_base: av::Rational,
+}
+
+fn transcode_audio_mp3(source: &Path, destination: &Path, bitrate_kbps: u32) -> Result<()> {
+    initialize()?;
+    let mut input = av::format::input(source).map_err(av_error("failed to open media input"))?;
+    let input_stream = input
+        .streams()
+        .best(av::media::Type::Audio)
+        .ok_or_else(|| backend("input contains no audio stream"))?;
+    let input_index = input_stream.index();
+    let input_time_base = input_stream.time_base();
+    let decoder_context = av::codec::context::Context::from_parameters(input_stream.parameters())
+        .map_err(av_error("failed to create audio decoder"))?;
+    let mut decoder = decoder_context
+        .decoder()
+        .audio()
+        .map_err(av_error("failed to open audio decoder"))?;
+    decoder.set_time_base(input_time_base);
+
+    let codec = av::encoder::find_by_name("libmp3lame")
+        .ok_or_else(|| backend("FFmpeg was built without the libmp3lame encoder"))?;
+    let audio_codec = codec
+        .audio()
+        .map_err(av_error("libmp3lame is not an audio encoder"))?;
+    let mut output = av::format::output_as(destination, "mp3")
+        .map_err(av_error("failed to create MP3 output"))?;
+    let global_header = output
+        .format()
+        .flags()
+        .contains(av::format::flag::Flags::GLOBAL_HEADER);
+    let mut encoder = av::codec::context::Context::new_with_codec(codec)
+        .encoder()
+        .audio()
+        .map_err(av_error("failed to create MP3 encoder"))?;
+    let channel_layout = audio_codec
+        .channel_layouts()
+        .map(|layouts| layouts.best(decoder.channel_layout().channels()))
+        .unwrap_or(av::channel_layout::ChannelLayout::STEREO);
+    let sample_format = audio_codec
+        .formats()
+        .and_then(|mut formats| formats.next())
+        .ok_or_else(|| backend("libmp3lame reports no supported sample format"))?;
+    if global_header {
+        encoder.set_flags(av::codec::flag::Flags::GLOBAL_HEADER);
+    }
+    encoder.set_rate(decoder.rate() as i32);
+    encoder.set_channel_layout(channel_layout);
+    encoder.set_format(sample_format);
+    encoder.set_bit_rate((bitrate_kbps as usize) * 1_000);
+    encoder.set_time_base((1, decoder.rate() as i32));
+    let encoder = encoder
+        .open_as(codec)
+        .map_err(av_error("failed to open libmp3lame encoder"))?;
+    let encoder_time_base = encoder.time_base();
+
+    let output_index;
+    {
+        let mut stream = output
+            .add_stream(codec)
+            .map_err(av_error("failed to add MP3 stream"))?;
+        stream.set_parameters(&encoder);
+        stream.set_time_base(encoder_time_base);
+        output_index = stream.index();
+    }
+    let output_time_base = output
+        .stream(output_index)
+        .ok_or_else(|| backend("output audio stream disappeared"))?
+        .time_base();
+    let filter = audio_filter(&decoder, &encoder)?;
+    output
+        .write_header()
+        .map_err(av_error("failed to write MP3 header"))?;
+
+    let mut transcoder = AudioTranscoder {
+        input_index,
+        decoder,
+        encoder,
+        filter,
+        encoder_time_base,
+        output_time_base,
+    };
+    for (stream, mut packet) in input.packets() {
+        if stream.index() != transcoder.input_index {
+            continue;
+        }
+        packet.rescale_ts(stream.time_base(), input_time_base);
+        transcoder
+            .decoder
+            .send_packet(&packet)
+            .map_err(av_error("failed to send audio packet"))?;
+        transcoder.process_decoded(&mut output)?;
+    }
+    transcoder
+        .decoder
+        .send_eof()
+        .map_err(av_error("failed to flush audio decoder"))?;
+    transcoder.process_decoded(&mut output)?;
+    transcoder
+        .filter
+        .get("in")
+        .ok_or_else(|| backend("audio filter input disappeared"))?
+        .source()
+        .flush()
+        .map_err(av_error("failed to flush audio filter"))?;
+    transcoder.process_filtered(&mut output)?;
+    transcoder
+        .encoder
+        .send_eof()
+        .map_err(av_error("failed to flush MP3 encoder"))?;
+    transcoder.process_encoded(&mut output)?;
+    output
+        .write_trailer()
+        .map_err(av_error("failed to write MP3 trailer"))?;
+    std::fs::File::open(destination)?.sync_all()?;
+    Ok(())
+}
+
+fn audio_filter(
+    decoder: &av::decoder::Audio,
+    encoder: &av::encoder::Audio,
+) -> Result<av::filter::Graph> {
+    let mut filter = av::filter::Graph::new();
+    let arguments = format!(
+        "time_base={}:sample_rate={}:sample_fmt={}:channel_layout=0x{:x}",
+        decoder.time_base(),
+        decoder.rate(),
+        decoder.format().name(),
+        decoder.channel_layout().bits()
+    );
+    let input = av::filter::find("abuffer").ok_or_else(|| backend("abuffer filter is missing"))?;
+    let output =
+        av::filter::find("abuffersink").ok_or_else(|| backend("abuffersink filter is missing"))?;
+    filter
+        .add(&input, "in", &arguments)
+        .map_err(av_error("failed to add audio filter input"))?;
+    filter
+        .add(&output, "out", "")
+        .map_err(av_error("failed to add audio filter output"))?;
+    {
+        let mut sink = filter
+            .get("out")
+            .ok_or_else(|| backend("audio filter output disappeared"))?;
+        sink.set_sample_format(encoder.format());
+        sink.set_channel_layout(encoder.channel_layout());
+        sink.set_sample_rate(encoder.rate());
+    }
+    filter
+        .output("in", 0)
+        .map_err(av_error("failed to connect audio filter input"))?
+        .input("out", 0)
+        .map_err(av_error("failed to connect audio filter output"))?
+        .parse("anull")
+        .map_err(av_error("failed to configure audio filter"))?;
+    filter
+        .validate()
+        .map_err(av_error("failed to validate audio filter"))?;
+    if !codec_has_variable_frames(encoder) {
+        filter
+            .get("out")
+            .ok_or_else(|| backend("audio filter output disappeared"))?
+            .sink()
+            .set_frame_size(encoder.frame_size());
+    }
+    Ok(filter)
+}
+
+fn codec_has_variable_frames(encoder: &av::encoder::Audio) -> bool {
+    encoder.codec().is_some_and(|codec| {
+        codec
+            .capabilities()
+            .contains(av::codec::capabilities::Capabilities::VARIABLE_FRAME_SIZE)
+    })
+}
+
+impl AudioTranscoder {
+    fn process_decoded(&mut self, output: &mut av::format::context::Output) -> Result<()> {
+        let mut decoded = av::frame::Audio::empty();
+        loop {
+            match self.decoder.receive_frame(&mut decoded) {
+                Ok(()) => {
+                    let timestamp = decoded.timestamp();
+                    decoded.set_pts(timestamp);
+                    self.filter
+                        .get("in")
+                        .ok_or_else(|| backend("audio filter input disappeared"))?
+                        .source()
+                        .add(&decoded)
+                        .map_err(av_error("failed to filter decoded audio"))?;
+                    self.process_filtered(output)?;
+                }
+                Err(error) if is_drain_complete(error) => break,
+                Err(error) => return Err(backend(format!("audio decode failed: {error}"))),
+            }
+        }
+        Ok(())
+    }
+
+    fn process_filtered(&mut self, output: &mut av::format::context::Output) -> Result<()> {
+        let mut filtered = av::frame::Audio::empty();
+        loop {
+            let result = self
+                .filter
+                .get("out")
+                .ok_or_else(|| backend("audio filter output disappeared"))?
+                .sink()
+                .frame(&mut filtered);
+            match result {
+                Ok(()) => {
+                    self.encoder
+                        .send_frame(&filtered)
+                        .map_err(av_error("failed to send audio to MP3 encoder"))?;
+                    self.process_encoded(output)?;
+                }
+                Err(error) if is_drain_complete(error) => break,
+                Err(error) => return Err(backend(format!("audio filter failed: {error}"))),
+            }
+        }
+        Ok(())
+    }
+
+    fn process_encoded(&mut self, output: &mut av::format::context::Output) -> Result<()> {
+        let mut packet = av::Packet::empty();
+        loop {
+            match self.encoder.receive_packet(&mut packet) {
+                Ok(()) => {
+                    packet.set_stream(0);
+                    packet.rescale_ts(self.encoder_time_base, self.output_time_base);
+                    packet.set_position(-1);
+                    packet
+                        .write_interleaved(output)
+                        .map_err(av_error("failed to write MP3 packet"))?;
+                }
+                Err(error) if is_drain_complete(error) => break,
+                Err(error) => return Err(backend(format!("MP3 encode failed: {error}"))),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_drain_complete(error: av::Error) -> bool {
+    matches!(error, av::Error::Eof)
+        || matches!(error, av::Error::Other { errno } if errno == av::error::EAGAIN)
 }
 
 fn drain_decoder(decoder: &mut av::decoder::Audio, frame: &mut av::frame::Audio) -> Result<usize> {

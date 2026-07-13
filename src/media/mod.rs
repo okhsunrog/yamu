@@ -71,6 +71,15 @@ pub trait MediaBackend: Clone + Send + Sync + 'static {
         replace: bool,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Transcodes the first audio stream to MP3 at the requested bitrate.
+    fn transcode_mp3(
+        &self,
+        source: PathBuf,
+        destination: PathBuf,
+        bitrate_kbps: u32,
+        replace: bool,
+    ) -> impl Future<Output = Result<()>> + Send;
+
     fn verify_m4a(&self, path: PathBuf) -> impl Future<Output = Result<()>> + Send;
 }
 
