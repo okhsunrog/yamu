@@ -2,7 +2,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string, method, path},
 };
-use yandex_music_api::{
+use yamu::{
     Client, Error,
     models::{PlaylistDiff, PlaylistTrackId, PlaylistVisibility},
 };

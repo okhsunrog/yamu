@@ -10,7 +10,7 @@ use ctr::{
 use url::Url;
 use uuid::Uuid;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
-use yandex_music_api::{
+use yamu::{
     Client,
     downloader::{
         CancellationToken, DownloadEvent, DownloadPhase, DownloadPolicy, DownloadRequest,

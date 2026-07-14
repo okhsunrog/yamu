@@ -1,4 +1,4 @@
-use yandex_music_api::resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef};
+use yamu::resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef};
 
 #[test]
 fn parses_track_url_and_discards_non_semantic_parts() {

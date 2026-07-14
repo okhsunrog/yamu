@@ -2,12 +2,12 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use yandex_music_api::media::{MediaBackend, TrackMetadata, verify_audio_file, write_metadata};
+use yamu::media::{MediaBackend, TrackMetadata, verify_audio_file, write_metadata};
 
 #[cfg(feature = "media-ffmpeg")]
-use yandex_music_api::media::ffmpeg::Ffmpeg;
+use yamu::media::ffmpeg::Ffmpeg;
 #[cfg(feature = "media-ffmpeg-cli")]
-use yandex_music_api::media::ffmpeg_cli::FfmpegCli;
+use yamu::media::ffmpeg_cli::FfmpegCli;
 
 #[cfg(feature = "media-ffmpeg-cli")]
 #[tokio::test]

@@ -4,7 +4,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{header, method, path, query_param},
 };
-use yandex_music_api::{Client, models::LyricsFormat};
+use yamu::{Client, models::LyricsFormat};
 
 #[test]
 fn parses_lyrics_formats_for_cli_consumers() {

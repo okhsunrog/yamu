@@ -7,7 +7,7 @@ use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
     matchers::{body_string, method, path},
 };
-use yandex_music_api::{
+use yamu::{
     Error,
     auth::{DeviceAuth, DeviceTokenPoll},
 };

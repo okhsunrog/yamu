@@ -2,7 +2,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string, header, method, path, query_param},
 };
-use yandex_music_api::{Client, Error, models::Id};
+use yamu::{Client, Error, models::Id};
 
 #[tokio::test]
 async fn fetches_tracks_and_preserves_unknown_fields() {

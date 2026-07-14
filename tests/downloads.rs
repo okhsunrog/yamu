@@ -12,7 +12,7 @@ use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
     matchers::{header, method, path, query_param},
 };
-use yandex_music_api::{
+use yamu::{
     Client, Error, ReadRequestPolicy,
     models::{AudioCodec, DownloadOptions, DownloadQuality},
 };

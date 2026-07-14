@@ -1,5 +1,5 @@
 [package]
-name = "yandex-music-api"
+name = "yamu"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,10 @@ categories = ["api-bindings", "multimedia"]
 [workspace]
 resolver = "3"
 members = [
-    "apps/ym-auth",
-    "apps/ym-download",
-    "apps/ym-edit",
-    "apps/ym-inspect",
+    "apps/yamu-auth",
+    "apps/yamu-download",
+    "apps/yamu-edit",
+    "apps/yamu-inspect",
 ]
 
 [workspace.package]
@@ -47,7 +47,7 @@ uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
 zeroize = "1"
 
-yandex-music-api = { path = "." }
+yamu = { path = "." }
 
 [features]
 default = ["oauth"]

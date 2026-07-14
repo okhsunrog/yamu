@@ -23,4 +23,4 @@ jobs:
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: cargo package -p yandex-music-api --locked
+      - run: cargo package -p yamu --locked

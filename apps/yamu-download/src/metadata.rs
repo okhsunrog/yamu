@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use tokio::sync::Mutex;
-use yandex_music_api::{
+use yamu::{
     media::{self, ffmpeg_cli::FfmpegCli},
     models::{Album, Track},
 };
@@ -26,7 +26,7 @@ pub struct TrackMetadata {
     pub lyrics: Option<EmbeddedLyrics>,
 }
 
-pub use yandex_music_api::media::EmbeddedLyrics;
+pub use yamu::media::EmbeddedLyrics;
 
 impl TrackMetadata {
     pub fn from_track(track: &Track) -> Self {

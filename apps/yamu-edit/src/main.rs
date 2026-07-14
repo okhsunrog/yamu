@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
-use yandex_music_api::{
+use yamu::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
@@ -14,7 +14,7 @@ use yandex_music_api::{
 #[derive(Debug, Parser)]
 #[command(about = "Explicit mutation client for Yandex Music")]
 struct Cli {
-    /// Credential profile created by ym-auth.
+    /// Credential profile created by yamu-auth.
     #[arg(long, global = true, default_value = DEFAULT_PROFILE)]
     profile: String,
 
@@ -116,14 +116,14 @@ async fn run() -> Result<()> {
         .await
         .with_context(|| {
             format!(
-                "failed to load profile {:?}; run `ym-auth login`",
+                "failed to load profile {:?}; run `yamu-auth login`",
                 cli.profile
             )
         })?;
     let credentials = resolved.credentials;
     if credentials.is_expired()? {
         bail!(
-            "profile {:?} has expired; run `ym-auth login --force`",
+            "profile {:?} has expired; run `yamu-auth login --force`",
             cli.profile
         );
     }

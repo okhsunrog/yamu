@@ -10,7 +10,7 @@ use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
     matchers::{method, path},
 };
-use yandex_music_api::{Client, ReadRequestPolicy};
+use yamu::{Client, ReadRequestPolicy};
 
 #[derive(Clone)]
 struct FailOnce {

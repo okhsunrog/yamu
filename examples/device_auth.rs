@@ -1,4 +1,4 @@
-use yandex_music_api::{Client, Result, auth::DeviceAuth};
+use yamu::{Client, Result, auth::DeviceAuth};
 
 #[tokio::main]
 async fn main() -> Result<()> {

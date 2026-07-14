@@ -2260,7 +2260,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
-name = "yandex-music-api"
+name = "yamu"
 version = "0.1.0"
 dependencies = [
  "aes",
@@ -2285,17 +2285,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "ym-auth"
+name = "yamu-auth"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "tokio",
- "yandex-music-api",
+ "yamu",
 ]
 
 [[package]]
-name = "ym-download"
+name = "yamu-download"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2304,11 +2304,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "yandex-music-api",
+ "yamu",
 ]
 
 [[package]]
-name = "ym-edit"
+name = "yamu-edit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2316,11 +2316,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "yandex-music-api",
+ "yamu",
 ]
 
 [[package]]
-name = "ym-inspect"
+name = "yamu-inspect"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2328,7 +2328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "yandex-music-api",
+ "yamu",
 ]
 
 [[package]]

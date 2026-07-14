@@ -15,7 +15,8 @@ use tokio::{io::AsyncWriteExt, sync::Mutex};
 use crate::DownloadJob;
 
 const STATE_VERSION: u32 = 3;
-const STATE_FILE: &str = ".ym-download-state.json";
+const STATE_FILE: &str = ".yamu-download-state.json";
+const LEGACY_STATE_FILE: &str = ".ym-download-state.json";
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -258,12 +259,18 @@ async fn load_state(
     source_kind: &str,
     source_id: &str,
 ) -> Result<Option<CollectionState>> {
-    let path = directory.join(STATE_FILE);
-    let old = match tokio::fs::read(path).await {
-        Ok(bytes) => serde_json::from_slice::<CollectionState>(&bytes).ok(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+    let bytes = match tokio::fs::read(directory.join(STATE_FILE)).await {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match tokio::fs::read(directory.join(LEGACY_STATE_FILE)).await {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
         Err(error) => return Err(error.into()),
     };
+    let old = bytes.and_then(|bytes| serde_json::from_slice::<CollectionState>(&bytes).ok());
     Ok(old.filter(|state| {
         state.version == STATE_VERSION
             && state.source_kind == source_kind
@@ -287,4 +294,38 @@ fn unix_timestamp() -> Result<u64> {
         .duration_since(UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?
         .as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn loads_manifest_written_by_the_old_binary_name() -> Result<()> {
+        let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "yamu-legacy-state-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await?;
+        let state = CollectionState {
+            version: STATE_VERSION,
+            source_kind: "playlist".to_owned(),
+            source_id: "owner:42".to_owned(),
+            updated_at: 0,
+            entries: BTreeMap::new(),
+            stale_entries: Vec::new(),
+        };
+        tokio::fs::write(
+            directory.join(LEGACY_STATE_FILE),
+            serde_json::to_vec(&state)?,
+        )
+        .await?;
+
+        let loaded = load_state(&directory, "playlist", "owner:42").await?;
+        tokio::fs::remove_dir_all(&directory).await?;
+
+        assert!(loaded.is_some());
+        Ok(())
+    }
 }

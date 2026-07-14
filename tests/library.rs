@@ -2,7 +2,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string, method, path, query_param},
 };
-use yandex_music_api::{Client, models::Id};
+use yamu::{Client, models::Id};
 
 fn client_for(server: &MockServer) -> Client {
     Client::builder()

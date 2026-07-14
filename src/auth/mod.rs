@@ -16,7 +16,7 @@ const DEFAULT_OAUTH_BASE_URL: &str = "https://oauth.yandex.ru/";
 // client application and cannot be kept secret in a distributed native application.
 const DEFAULT_CLIENT_ID: &str = "23cabbbdc6cd418abb4b39c32c41195d";
 const DEFAULT_CLIENT_SECRET: &str = "53bc75238f0c4d08a118e51fe9203300";
-const DEFAULT_DEVICE_NAME: &str = "yandex-music-api-rs";
+const DEFAULT_DEVICE_NAME: &str = "yamu-rs";
 
 /// A client for Yandex OAuth Device Flow.
 #[derive(Clone)]

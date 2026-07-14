@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use yandex_music_api::{
+use yamu::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, Credentials, DEFAULT_PROFILE, RefreshPolicy},
@@ -101,7 +101,7 @@ async fn status(store: &CredentialStore, profile: &str) -> Result<()> {
         .with_context(|| format!("failed to load profile {profile:?}"))?;
     let credentials = &resolved.credentials;
     if credentials.is_expired()? {
-        bail!("profile {profile:?} has expired; run `ym-auth login --force`");
+        bail!("profile {profile:?} has expired; run `yamu-auth login --force`");
     }
 
     let client = Client::new(credentials.access_token())?;

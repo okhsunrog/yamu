@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::{sync::Semaphore, task::JoinSet};
-use yandex_music_api::{
+use yamu::{
     Client,
     auth::DeviceAuth,
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
@@ -40,7 +40,7 @@ struct EnrichmentMarker {
 #[derive(Debug, Parser)]
 #[command(about = "Download tracks and collections from Yandex Music")]
 struct Cli {
-    /// Credential profile created by ym-auth.
+    /// Credential profile created by yamu-auth.
     #[arg(long, default_value = DEFAULT_PROFILE)]
     profile: String,
 
@@ -216,14 +216,14 @@ async fn run() -> Result<()> {
         .await
         .with_context(|| {
             format!(
-                "failed to load profile {:?}; run `ym-auth login`",
+                "failed to load profile {:?}; run `yamu-auth login`",
                 cli.profile
             )
         })?;
     let credentials = resolved.credentials;
     if credentials.is_expired()? {
         bail!(
-            "profile {:?} has expired; run `ym-auth login --force`",
+            "profile {:?} has expired; run `yamu-auth login --force`",
             cli.profile
         );
     }
@@ -858,7 +858,7 @@ enum DownloadStatus {
     Downloaded {
         path: PathBuf,
         quality: String,
-        codec: yandex_music_api::models::AudioCodec,
+        codec: yamu::models::AudioCodec,
     },
     Skipped {
         path: PathBuf,
@@ -1156,7 +1156,7 @@ async fn download_normalized(
 }
 
 fn normalized_extension(info: &DownloadInfo) -> &'static str {
-    use yandex_music_api::models::AudioCodec;
+    use yamu::models::AudioCodec;
     match &info.codec {
         AudioCodec::Flac | AudioCodec::FlacMp4 => "flac",
         AudioCodec::Aac | AudioCodec::HeAac | AudioCodec::AacMp4 | AudioCodec::HeAacMp4 => "m4a",
@@ -1383,7 +1383,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "ym-download-sync-test-{}-{nonce}",
+            "yamu-download-sync-test-{}-{nonce}",
             std::process::id()
         ));
         tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -1406,12 +1406,12 @@ mod tests {
             .record(1, StateStatus::Downloaded, Some(&audio), None)
             .await
             .unwrap();
-        let before_flush = tokio::fs::read_to_string(directory.join(".ym-download-state.json"))
+        let before_flush = tokio::fs::read_to_string(directory.join(".yamu-download-state.json"))
             .await
             .unwrap();
         assert!(before_flush.contains("\"status\": \"pending\""));
         state.flush().await.unwrap();
-        let after_flush = tokio::fs::read_to_string(directory.join(".ym-download-state.json"))
+        let after_flush = tokio::fs::read_to_string(directory.join(".yamu-download-state.json"))
             .await
             .unwrap();
         assert!(after_flush.contains("\"status\": \"downloaded\""));
@@ -1462,7 +1462,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "ym-download-orphan-prune-test-{}-{nonce}",
+            "yamu-download-orphan-prune-test-{}-{nonce}",
             std::process::id()
         ));
         tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -1498,7 +1498,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "ym-download-symlink-prune-test-{}-{nonce}",
+            "yamu-download-symlink-prune-test-{}-{nonce}",
             std::process::id()
         ));
         tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -1525,7 +1525,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "ym-download-lyrics-test-{}-{nonce}",
+            "yamu-download-lyrics-test-{}-{nonce}",
             std::process::id()
         ));
         tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -1557,7 +1557,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "ym-download-enrichment-test-{}-{nonce}",
+            "yamu-download-enrichment-test-{}-{nonce}",
             std::process::id()
         ));
         tokio::fs::create_dir_all(&directory).await.unwrap();
