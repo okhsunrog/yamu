@@ -275,7 +275,7 @@ fn request(
 
 fn temporary_path(name: &str) -> PathBuf {
     std::env::temp_dir()
-        .join(format!("ya-music-downloader-test-{}", Uuid::new_v4()))
+        .join(format!("yamu-downloader-test-{}", Uuid::new_v4()))
         .join(name)
 }
 
