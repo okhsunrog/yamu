@@ -31,7 +31,7 @@ The single library crate uses additive feature flags:
 The two FFmpeg features implement the same `MediaBackend` contract and can be
 tested together. `media-ffmpeg` does not require the `ffmpeg` executable at
 runtime, but the target application must build and package compatible FFmpeg
-libraries. Neither backend uses Symphonia.
+libraries.
 
 The API is private and may change without notice, so the library is currently
 experimental. A minimal direct client looks like this:
