@@ -12,6 +12,9 @@ pub enum Error {
     #[error("credential profile {profile:?} does not exist at {path}")]
     ProfileNotFound { profile: String, path: PathBuf },
 
+    #[error("credential profile {profile:?} already exists at {path}")]
+    ProfileAlreadyExists { profile: String, path: PathBuf },
+
     #[error("unsupported credential file version {found}; expected {expected}")]
     UnsupportedVersion { found: u32, expected: u32 },
 

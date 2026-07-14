@@ -39,6 +39,67 @@ fn saves_loads_and_deletes_profile() {
 }
 
 #[test]
+fn save_new_never_replaces_an_existing_profile() {
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    let original = Credentials::from_access_token("original-secret").unwrap();
+    let contender = Credentials::from_access_token("contender-secret").unwrap();
+
+    store.save_new("default", &original).unwrap();
+    assert!(matches!(
+        store.save_new("default", &contender),
+        Err(Error::ProfileAlreadyExists { .. })
+    ));
+
+    assert_eq!(
+        store.load("default").unwrap().access_token(),
+        "original-secret"
+    );
+}
+
+#[test]
+fn concurrent_save_new_has_exactly_one_winner() {
+    use std::sync::{Arc, Barrier};
+
+    let directory = TestDirectory::new();
+    let store = CredentialStore::at(&directory.0);
+    let barrier = Arc::new(Barrier::new(2));
+    let contenders = ["first-secret", "second-secret"]
+        .into_iter()
+        .map(|token| {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let credentials = Credentials::from_access_token(token).unwrap();
+                barrier.wait();
+                (token, store.save_new("default", &credentials))
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = contenders
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+
+    let winner = results
+        .iter()
+        .find_map(|(token, result)| result.as_ref().ok().map(|_| *token))
+        .unwrap();
+    assert_eq!(
+        results.iter().filter(|(_, result)| result.is_ok()).count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(_, result)| matches!(result, Err(Error::ProfileAlreadyExists { .. })))
+            .count(),
+        1
+    );
+    assert_eq!(store.load("default").unwrap().access_token(), winner);
+}
+
+#[test]
 fn rejects_path_traversal_profiles() {
     let directory = TestDirectory::new();
     let store = CredentialStore::at(&directory.0);

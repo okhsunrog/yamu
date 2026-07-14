@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::{io::AsyncWriteExt as _, sync::watch, time::sleep};
 
 use crate::{
-    Client,
+    Client, atomic_file,
     media::{self, MediaBackend},
     models::{AudioCodec, DownloadInfo},
 };
@@ -226,17 +226,13 @@ impl<B: MediaBackend> Downloader<B> {
                 return Err(Error::Cancelled);
             }
             on_event(DownloadEvent::PhaseChanged(DownloadPhase::Finalizing));
-            if let Err(error) =
-                replace_file(&normalized, &request.destination, request.replace).await
-            {
+            if let Err(error) = replace_file(&normalized, &request.destination, request.replace) {
                 let _ = tokio::fs::remove_file(&normalized).await;
                 return Err(error);
             }
         } else {
             on_event(DownloadEvent::PhaseChanged(DownloadPhase::Finalizing));
-            if let Err(error) =
-                replace_file(&temporary, &request.destination, request.replace).await
-            {
+            if let Err(error) = replace_file(&temporary, &request.destination, request.replace) {
                 let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(error);
             }
@@ -414,15 +410,13 @@ fn sibling_temporary_with_extension(destination: &Path, suffix: &str, extension:
     ))
 }
 
-async fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
-    #[cfg(windows)]
-    if replace && tokio::fs::try_exists(destination).await? {
-        tokio::fs::remove_file(destination).await?;
+fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
+    match atomic_file::persist(source, destination, replace) {
+        Err(error) if !replace && error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(Error::DestinationExists(destination.to_owned()))
+        }
+        result => result.map_err(Error::from),
     }
-    #[cfg(not(windows))]
-    let _ = replace;
-    tokio::fs::rename(source, destination).await?;
-    Ok(())
 }
 
 fn is_transient(error: &Error) -> bool {

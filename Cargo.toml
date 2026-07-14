@@ -4,10 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "An unofficial async Rust client for the Yandex Music API"
+authors = ["Danila Gornushko <me@okhsunrog.dev>"]
 license.workspace = true
 repository.workspace = true
 keywords = ["yandex", "music", "api", "async"]
 categories = ["api-bindings", "multimedia"]
+readme = "README.md"
+documentation = "https://docs.rs/yamu"
+exclude = [".cargo", ".github", ".gitignore"]
 
 [workspace]
 resolver = "3"
@@ -42,6 +46,7 @@ serde_json = "1"
 sha2 = "0.11.0"
 thiserror = "2"
 tokio = "1"
+tempfile = "3.27"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
@@ -52,7 +57,7 @@ yamu = { path = "." }
 [features]
 default = ["oauth"]
 oauth = ["dep:uuid"]
-credentials = ["oauth", "dep:directories", "dep:zeroize", "tokio/rt"]
+credentials = ["oauth", "dep:directories", "dep:tempfile", "dep:zeroize", "tokio/rt"]
 downloads = ["dep:base64", "dep:hmac", "dep:sha2", "reqwest/stream"]
 downloader = [
     "downloads",
@@ -60,13 +65,14 @@ downloader = [
     "dep:aes",
     "dep:ctr",
     "dep:hex",
+    "dep:tempfile",
     "tokio/io-util",
     "tokio/macros",
 ]
 lyrics = ["dep:base64", "dep:hmac", "dep:sha2"]
 media = ["dep:lofty", "tokio/fs", "tokio/rt"]
-media-ffmpeg-cli = ["media", "tokio/io-util", "tokio/process"]
-media-ffmpeg = ["media", "dep:ffmpeg-next", "dep:imagesize"]
+media-ffmpeg-cli = ["media", "dep:tempfile", "tokio/io-util", "tokio/process"]
+media-ffmpeg = ["media", "dep:ffmpeg-next", "dep:imagesize", "dep:tempfile"]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
@@ -84,6 +90,7 @@ serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
+tempfile = { workspace = true, optional = true }
 url.workspace = true
 uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }

@@ -197,7 +197,7 @@ async fn exercise_mp3_transcode<B: MediaBackend>(backend: B) {
         "-f",
         "lavfi",
         "-i",
-        "sine=frequency=440:duration=0.2",
+        "sine=frequency=440:sample_rate=96000:duration=1",
         "-c:a",
         "aac",
         "-f",
@@ -219,16 +219,27 @@ async fn exercise_mp3_transcode<B: MediaBackend>(backend: B) {
             "-select_streams",
             "a:0",
             "-show_entries",
-            "stream=codec_name",
+            "stream=codec_name,sample_rate:format=duration",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "json",
         ])
         .arg(&destination)
         .output()
         .await
         .unwrap();
     assert!(probe.status.success());
-    assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "mp3");
+    let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert_eq!(probe["streams"][0]["codec_name"], "mp3");
+    assert_eq!(probe["streams"][0]["sample_rate"], "48000");
+    let duration = probe["format"]["duration"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!(
+        (0.9..1.2).contains(&duration),
+        "unexpected duration: {duration}"
+    );
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 

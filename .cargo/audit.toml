@@ -1,0 +1,5 @@
+[advisories]
+# `paste` is an unmaintained compile-time proc macro pulled in by lofty 0.24.
+# Lofty's latest release and main branch still depend on it, and RustSec lists
+# no vulnerability. Remove this exception as soon as lofty drops the crate.
+ignore = ["RUSTSEC-2024-0436"]

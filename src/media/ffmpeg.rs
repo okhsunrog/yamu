@@ -8,6 +8,7 @@ use std::{
 use ffmpeg_next as av;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+use crate::atomic_file;
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -280,14 +281,23 @@ fn transcode_audio_mp3(source: &Path, destination: &Path, bitrate_kbps: u32) -> 
         .formats()
         .and_then(|mut formats| formats.next())
         .ok_or_else(|| backend("libmp3lame reports no supported sample format"))?;
+    let input_rate = decoder.rate() as i32;
+    let sample_rate = audio_codec
+        .rates()
+        .and_then(|rates| {
+            rates
+                .filter(|rate| *rate > 0)
+                .min_by_key(|rate| rate.abs_diff(input_rate))
+        })
+        .unwrap_or(input_rate);
     if global_header {
         encoder.set_flags(av::codec::flag::Flags::GLOBAL_HEADER);
     }
-    encoder.set_rate(decoder.rate() as i32);
+    encoder.set_rate(sample_rate);
     encoder.set_channel_layout(channel_layout);
     encoder.set_format(sample_format);
     encoder.set_bit_rate((bitrate_kbps as usize) * 1_000);
-    encoder.set_time_base((1, decoder.rate() as i32));
+    encoder.set_time_base((1, sample_rate));
     let encoder = encoder
         .open_as(codec)
         .map_err(av_error("failed to open libmp3lame encoder"))?;
@@ -376,20 +386,19 @@ fn audio_filter(
     filter
         .add(&output, "out", "")
         .map_err(av_error("failed to add audio filter output"))?;
-    {
-        let mut sink = filter
-            .get("out")
-            .ok_or_else(|| backend("audio filter output disappeared"))?;
-        sink.set_sample_format(encoder.format());
-        sink.set_channel_layout(encoder.channel_layout());
-        sink.set_sample_rate(encoder.rate());
-    }
+    let filters = format!(
+        "aresample={},aformat=sample_fmts={}:sample_rates={}:channel_layouts=0x{:x}",
+        encoder.rate(),
+        encoder.format().name(),
+        encoder.rate(),
+        encoder.channel_layout().bits()
+    );
     filter
         .output("in", 0)
         .map_err(av_error("failed to connect audio filter input"))?
         .input("out", 0)
         .map_err(av_error("failed to connect audio filter output"))?
-        .parse("anull")
+        .parse(&filters)
         .map_err(av_error("failed to configure audio filter"))?;
     filter
         .validate()
@@ -528,13 +537,7 @@ fn metadata_dictionary(metadata: &TrackMetadata) -> av::Dictionary<'static> {
 }
 
 fn replace_file_blocking(source: &Path, destination: &Path, replace: bool) -> Result<()> {
-    #[cfg(windows)]
-    if replace && destination.exists() {
-        std::fs::remove_file(destination)?;
-    }
-    let _ = replace;
-    std::fs::rename(source, destination)?;
-    Ok(())
+    atomic_file::persist(source, destination, replace).map_err(Error::from)
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {

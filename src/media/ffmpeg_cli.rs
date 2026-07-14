@@ -8,6 +8,7 @@ use std::{
 use tokio::process::Command;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+use crate::atomic_file;
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -133,7 +134,7 @@ async fn write_m4a_metadata(
             .await?
             .sync_all()
             .await?;
-        replace_file(&output_path, path, true).await
+        replace_file(&output_path, path, true)
     }
     .await;
     if let Some(picture_path) = &picture_path {
@@ -174,7 +175,7 @@ async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<
             .map_err(|error| backend(format!("failed to run ffmpeg for FLAC remux: {error}")))?;
         ensure_success(output, "ffmpeg FLAC remux")?;
         tokio::fs::File::open(&temporary).await?.sync_all().await?;
-        replace_file(&temporary, destination, replace).await
+        replace_file(&temporary, destination, replace)
     }
     .await;
     if result.is_err() {
@@ -219,7 +220,7 @@ async fn transcode_mp3(
             .map_err(|error| backend(format!("failed to run ffmpeg for MP3 transcode: {error}")))?;
         ensure_success(output, "ffmpeg MP3 transcode")?;
         tokio::fs::File::open(&temporary).await?.sync_all().await?;
-        replace_file(&temporary, destination, replace).await
+        replace_file(&temporary, destination, replace)
     }
     .await;
     if result.is_err() {
@@ -246,14 +247,8 @@ fn ensure_success(output: std::process::Output, operation: &str) -> Result<()> {
     Err(backend(format!("{operation} failed: {stderr}")))
 }
 
-async fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
-    #[cfg(windows)]
-    if replace && tokio::fs::try_exists(destination).await? {
-        tokio::fs::remove_file(destination).await?;
-    }
-    let _ = replace;
-    tokio::fs::rename(source, destination).await?;
-    Ok(())
+fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
+    atomic_file::persist(source, destination, replace).map_err(Error::from)
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {

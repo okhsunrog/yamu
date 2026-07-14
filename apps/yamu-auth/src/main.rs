@@ -75,7 +75,12 @@ async fn login(store: &CredentialStore, profile: &str, force: bool) -> Result<()
         .await
         .context("the token was issued but account validation failed")?;
     let credentials = Credentials::from_oauth_token(&token)?;
-    let path = store.save(profile, &credentials)?;
+    let path = if force {
+        store.save(profile, &credentials)
+    } else {
+        store.save_new(profile, &credentials)
+    }
+    .with_context(|| format!("failed to save profile {profile:?}"))?;
 
     let name = account
         .account

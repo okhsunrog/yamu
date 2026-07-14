@@ -8,6 +8,7 @@ use std::{
 use directories::ProjectDirs;
 
 use super::{Credentials, Error, Result};
+use crate::atomic_file;
 
 pub const DEFAULT_PROFILE: &str = "default";
 pub const TOKEN_ENV: &str = "YANDEX_MUSIC_TOKEN";
@@ -140,10 +141,26 @@ impl CredentialStore {
         self.save_unlocked(profile, credentials)
     }
 
+    /// Saves a new profile without replacing a profile that appeared while the
+    /// caller was obtaining credentials.
+    pub fn save_new(&self, profile: &str, credentials: &Credentials) -> Result<PathBuf> {
+        let _lock = self.lock_profile(profile)?;
+        self.save_unlocked_with_replace(profile, credentials, false)
+    }
+
     pub(crate) fn save_unlocked(
         &self,
         profile: &str,
         credentials: &Credentials,
+    ) -> Result<PathBuf> {
+        self.save_unlocked_with_replace(profile, credentials, true)
+    }
+
+    fn save_unlocked_with_replace(
+        &self,
+        profile: &str,
+        credentials: &Credentials,
+        replace: bool,
     ) -> Result<PathBuf> {
         credentials.validate_version()?;
         let path = self.profile_path(profile)?;
@@ -154,7 +171,7 @@ impl CredentialStore {
 
         let temporary = temporary_path(directory, profile)?;
         let result = write_credentials(&temporary, credentials)
-            .and_then(|()| replace_file(&temporary, &path));
+            .and_then(|()| replace_file(&temporary, &path, profile, replace));
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
@@ -236,12 +253,17 @@ fn write_credentials(path: &Path, credentials: &Credentials) -> Result<()> {
         .map_err(|source| io_error(path, source))
 }
 
-fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
-    #[cfg(windows)]
-    if destination.exists() {
-        fs::remove_file(destination).map_err(|source| io_error(destination, source))?;
+fn replace_file(temporary: &Path, destination: &Path, profile: &str, replace: bool) -> Result<()> {
+    match atomic_file::persist(temporary, destination, replace) {
+        Err(source) if !replace && source.kind() == io::ErrorKind::AlreadyExists => {
+            Err(Error::ProfileAlreadyExists {
+                profile: profile.to_owned(),
+                path: destination.to_owned(),
+            })
+        }
+        Err(source) => Err(io_error(destination, source)),
+        Ok(()) => Ok(()),
     }
-    fs::rename(temporary, destination).map_err(|source| io_error(destination, source))
 }
 
 #[cfg(unix)]

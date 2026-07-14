@@ -22,6 +22,7 @@ use yamu::{
     resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
 };
 
+mod atomic_file;
 mod metadata;
 mod state;
 
@@ -651,7 +652,6 @@ async fn download_jobs(
         }
         return Ok(());
     }
-    let stale_paths = plan.stale_paths;
     let state = CollectionStateStore::open(directory, source_kind, source_id, &jobs).await?;
     let semaphore = Arc::new(Semaphore::new(concurrency as usize));
     let artwork = ArtworkCache::new()?;
@@ -748,6 +748,7 @@ async fn download_jobs(
     if !failures.is_empty() {
         bail!("collection completed with {} failed tracks", failures.len());
     }
+    let stale_paths = state.stale_paths().await;
     if sync.prune {
         let mut pruned = 0;
         for path in stale_paths {
@@ -1064,11 +1065,7 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         file.flush().await?;
         file.sync_all().await?;
         drop(file);
-        #[cfg(windows)]
-        if tokio::fs::try_exists(path).await? {
-            tokio::fs::remove_file(path).await?;
-        }
-        tokio::fs::rename(&temporary, path).await?;
+        atomic_file::persist(&temporary, path, true)?;
         Ok::<_, anyhow::Error>(())
     }
     .await;

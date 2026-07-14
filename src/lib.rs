@@ -3,6 +3,13 @@
 //! The API is not publicly documented and can change without notice. This
 //! crate keeps its models forward-compatible by retaining unknown JSON fields.
 
+#[cfg(any(
+    feature = "credentials",
+    feature = "downloader",
+    feature = "media-ffmpeg-cli",
+    feature = "media-ffmpeg"
+))]
+mod atomic_file;
 #[cfg(feature = "oauth")]
 pub mod auth;
 mod client;

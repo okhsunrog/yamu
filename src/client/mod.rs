@@ -31,6 +31,7 @@ const DEFAULT_BASE_URL: &str = "https://api.music.yandex.net/";
 #[derive(Clone)]
 pub struct Client {
     pub(super) http: reqwest::Client,
+    #[cfg(any(feature = "downloads", feature = "lyrics"))]
     pub(super) media_http: reqwest::Client,
     pub(super) base_url: Url,
     pub(super) token: Option<String>,
@@ -180,6 +181,7 @@ impl ClientBuilder {
             .default_headers(headers.clone())
             .build()
             .map_err(Error::BuildClient)?;
+        #[cfg(any(feature = "downloads", feature = "lyrics"))]
         let media_http = reqwest::Client::builder()
             .connect_timeout(self.media_connect_timeout)
             .read_timeout(self.media_read_timeout)
@@ -193,6 +195,7 @@ impl ClientBuilder {
             .unwrap_or_else(Instant::now);
         Ok(Client {
             http,
+            #[cfg(any(feature = "downloads", feature = "lyrics"))]
             media_http,
             base_url: self.base_url,
             token: self.token,

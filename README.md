@@ -1,6 +1,15 @@
-# yamu workspace
+<h1 align="center">yamu</h1>
 
-Rust libraries and development tools for the unofficial Yandex Music API.
+<p align="center">An unofficial async Rust client for the Yandex Music API.</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/yamu"><img alt="crates.io" src="https://img.shields.io/crates/v/yamu.svg"></a>
+  <a href="https://docs.rs/yamu"><img alt="docs.rs" src="https://img.shields.io/docsrs/yamu"></a>
+  <img alt="license" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg">
+</p>
+
+The repository contains the `yamu` library together with its development and
+command-line tools.
 
 ## Packages
 

@@ -96,6 +96,45 @@ async fn streams_progress_and_atomically_finishes() {
 }
 
 #[tokio::test]
+async fn no_replace_preserves_a_destination_created_during_transfer() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0x5a; 1024 * 1024]))
+        .mount(&server)
+        .await;
+    let destination = temporary_path("raced.mp3");
+    let downloader = Downloader::new(Client::builder().build().unwrap(), TestBackend);
+    let mut download_request = request(&server, AudioCodec::Mp3, None, destination.clone());
+    download_request.replace = false;
+    let (started, wait_for_start) = tokio::sync::oneshot::channel();
+    let mut started = Some(started);
+    let competing_destination = destination.clone();
+
+    let (result, ()) = tokio::join!(
+        downloader.download(download_request, CancellationToken::new(), move |event| {
+            if event == DownloadEvent::PhaseChanged(DownloadPhase::Downloading)
+                && let Some(started) = started.take()
+            {
+                let _ = started.send(());
+            }
+        }),
+        async move {
+            wait_for_start.await.unwrap();
+            tokio::fs::write(&competing_destination, b"competing file")
+                .await
+                .unwrap();
+        }
+    );
+
+    assert!(matches!(result, Err(Error::DestinationExists(path)) if path == destination));
+    assert_eq!(
+        tokio::fs::read(&destination).await.unwrap(),
+        b"competing file"
+    );
+    cleanup(&destination).await;
+}
+
+#[tokio::test]
 async fn decrypts_aes_ctr_while_streaming() {
     let server = MockServer::start().await;
     let plaintext = b"streaming encrypted audio bytes".repeat(512);
