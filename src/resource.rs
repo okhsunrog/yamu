@@ -116,11 +116,115 @@ macro_rules! simple_resource_ref {
 simple_resource_ref!(AlbumRef, "album", "album", album_id);
 simple_resource_ref!(ArtistRef, "artist", "artist", artist_id);
 
-/// A playlist reference parsed from `owner:kind` or a Yandex Music URL.
+/// A user playlist reference parsed from `owner:kind` or its owner/kind URL.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PlaylistRef {
     owner: String,
     kind: String,
+}
+
+/// A playlist reference parsed from a UUID or the current Yandex Music URL.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PlaylistUuidRef(String);
+
+impl PlaylistUuidRef {
+    pub fn new(uuid: impl Into<String>) -> Result<Self, ParseResourceRefError> {
+        Ok(Self(validate_playlist_uuid(uuid.into())?))
+    }
+
+    pub fn playlist_uuid(&self) -> &str {
+        &self.0
+    }
+
+    pub fn canonical_url(&self) -> Url {
+        music_url(&format!("playlists/{}", self.0))
+    }
+}
+
+impl fmt::Display for PlaylistUuidRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for PlaylistUuidRef {
+    type Err = ParseResourceRefError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Some(segments) = music_url_segments(value)? {
+            let segments = segments.iter().map(String::as_str).collect::<Vec<_>>();
+            return match segments.as_slice() {
+                ["playlists", uuid] => Self::new(*uuid),
+                _ => Err(ParseResourceRefError::WrongResource {
+                    expected: "playlist UUID",
+                    value: value.to_owned(),
+                }),
+            };
+        }
+        Self::new(value)
+    }
+}
+
+/// Either a UUID playlist link or a user-scoped owner/kind reference.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PlaylistSourceRef {
+    User(PlaylistRef),
+    Uuid(PlaylistUuidRef),
+}
+
+impl PlaylistSourceRef {
+    pub fn canonical_url(&self) -> Url {
+        match self {
+            Self::User(playlist) => playlist.canonical_url(),
+            Self::Uuid(playlist) => playlist.canonical_url(),
+        }
+    }
+}
+
+impl fmt::Display for PlaylistSourceRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::User(playlist) => playlist.fmt(formatter),
+            Self::Uuid(playlist) => playlist.fmt(formatter),
+        }
+    }
+}
+
+impl From<PlaylistRef> for PlaylistSourceRef {
+    fn from(value: PlaylistRef) -> Self {
+        Self::User(value)
+    }
+}
+
+impl From<PlaylistUuidRef> for PlaylistSourceRef {
+    fn from(value: PlaylistUuidRef) -> Self {
+        Self::Uuid(value)
+    }
+}
+
+impl FromStr for PlaylistSourceRef {
+    type Err = ParseResourceRefError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Some(segments) = music_url_segments(value)? {
+            let segments = segments.iter().map(String::as_str).collect::<Vec<_>>();
+            return match segments.as_slice() {
+                ["users", owner, "playlists", kind] => {
+                    PlaylistRef::new(*owner, *kind).map(Self::User)
+                }
+                ["playlists", uuid] => PlaylistUuidRef::new(*uuid).map(Self::Uuid),
+                _ => Err(ParseResourceRefError::WrongResource {
+                    expected: "playlist",
+                    value: value.to_owned(),
+                }),
+            };
+        }
+        if value.trim().contains(':') {
+            value.parse::<PlaylistRef>().map(Self::User)
+        } else {
+            value.parse::<PlaylistUuidRef>().map(Self::Uuid)
+        }
+    }
 }
 
 impl PlaylistRef {
@@ -189,8 +293,34 @@ pub enum ParseResourceRefError {
     EmptyId(&'static str),
     #[error("invalid {kind} identifier {value:?}")]
     InvalidId { kind: &'static str, value: String },
-    #[error("invalid playlist reference {0:?}; expected owner:kind or a playlist URL")]
+    #[error(
+        "invalid playlist reference {0:?}; expected owner:kind, a playlist UUID, or a playlist URL"
+    )]
     InvalidPlaylist(String),
+}
+
+fn validate_playlist_uuid(value: String) -> Result<String, ParseResourceRefError> {
+    let value = validate_id("playlist UUID", value)?;
+    let uuid = if let Some((prefix, uuid)) = value.split_once('.') {
+        if prefix.len() != 2 || !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
+            return Err(ParseResourceRefError::InvalidPlaylist(value));
+        }
+        uuid
+    } else {
+        value.as_str()
+    };
+    let valid = uuid.len() == 36
+        && uuid.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    if !valid {
+        return Err(ParseResourceRefError::InvalidPlaylist(value));
+    }
+    Ok(value)
 }
 
 fn validate_id(kind: &'static str, value: String) -> Result<String, ParseResourceRefError> {

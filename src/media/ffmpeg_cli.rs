@@ -3,11 +3,12 @@
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use tokio::process::Command;
 
-use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime, ensure_decoded_duration};
 use crate::atomic_file;
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -43,21 +44,50 @@ impl MediaBackend for FfmpegCli {
         transcode_mp3(&source, &destination, bitrate_kbps, replace).await
     }
 
-    async fn verify_m4a(&self, path: PathBuf) -> Result<()> {
-        let output = Command::new("ffmpeg")
-            .arg("-nostdin")
-            .args(["-v", "error", "-i"])
-            .arg(path)
-            .args(["-map", "0:a:0", "-f", "null", "-"])
-            .output()
-            .await
-            .map_err(|error| {
-                backend(format!(
-                    "failed to run ffmpeg while validating M4A: {error}"
-                ))
-            })?;
-        ensure_success(output, "M4A audio decode")
+    async fn verify_audio(&self, path: PathBuf, expected_duration: Option<Duration>) -> Result<()> {
+        let actual_duration = decoded_duration(&path).await?;
+        match expected_duration {
+            Some(expected_duration) => ensure_decoded_duration(expected_duration, actual_duration),
+            None => Ok(()),
+        }
     }
+
+    async fn verify_m4a(&self, path: PathBuf) -> Result<()> {
+        decoded_duration(&path).await.map(|_| ())
+    }
+}
+
+async fn decoded_duration(path: &Path) -> Result<Duration> {
+    let output = Command::new("ffmpeg")
+        .arg("-nostdin")
+        .args(["-v", "error", "-xerror", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            "0:a:0",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-f",
+            "null",
+            "-",
+        ])
+        .output()
+        .await
+        .map_err(|error| {
+            backend(format!(
+                "failed to run ffmpeg while validating audio: {error}"
+            ))
+        })?;
+    ensure_success_ref(&output, "audio decode")?;
+    let progress = String::from_utf8_lossy(&output.stdout);
+    let microseconds = progress
+        .lines()
+        .filter_map(|line| line.strip_prefix("out_time_us="))
+        .filter_map(|value| value.parse::<u64>().ok())
+        .max()
+        .ok_or_else(|| backend("ffmpeg audio decode did not report a duration"))?;
+    Ok(Duration::from_micros(microseconds))
 }
 
 async fn write_m4a_metadata(
@@ -236,6 +266,10 @@ fn push_metadata(command: &mut Command, key: &str, value: Option<&str>) {
 }
 
 fn ensure_success(output: std::process::Output, operation: &str) -> Result<()> {
+    ensure_success_ref(&output, operation)
+}
+
+fn ensure_success_ref(output: &std::process::Output, operation: &str) -> Result<()> {
     if output.status.success() {
         return Ok(());
     }

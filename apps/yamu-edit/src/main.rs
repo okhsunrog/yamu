@@ -30,11 +30,13 @@ struct Cli {
 enum Command {
     /// Add one or more tracks to the liked-track library.
     Like {
+        /// Yandex Music track URLs or compact track IDs.
         #[arg(required = true)]
         tracks: Vec<TrackRef>,
     },
     /// Remove one or more tracks from the liked-track library.
     Unlike {
+        /// Yandex Music track URLs or compact track IDs.
         #[arg(required = true)]
         tracks: Vec<TrackRef>,
     },
@@ -45,23 +47,32 @@ enum Command {
         visibility: Visibility,
     },
     /// Rename a playlist.
-    PlaylistRename { kind: String, title: String },
+    PlaylistRename {
+        /// User-scoped owner/kind URL or compact kind owned by the current account.
+        kind: String,
+        title: String,
+    },
     /// Change playlist visibility.
     PlaylistVisibility {
+        /// User-scoped owner/kind URL or compact kind owned by the current account.
         kind: String,
         #[arg(value_enum)]
         visibility: Visibility,
     },
     /// Insert a track into a playlist using its current revision.
     PlaylistAdd {
+        /// User-scoped owner/kind URL or compact playlist kind.
         kind: String,
+        /// Yandex Music track URL or compact track ID.
         track: TrackRef,
+        /// Album URL or ID; inferred when the track URL contains its album.
         album: Option<AlbumRef>,
         #[arg(long, default_value_t = 0)]
         at: usize,
     },
     /// Delete the half-open track range [from, to) using the current revision.
     PlaylistRemove {
+        /// User-scoped owner/kind URL or compact kind owned by the current account.
         kind: String,
         #[arg(long)]
         from: usize,
@@ -70,6 +81,7 @@ enum Command {
     },
     /// Permanently delete a playlist.
     PlaylistDelete {
+        /// User-scoped owner/kind URL or compact kind owned by the current account.
         kind: String,
         /// Confirm permanent deletion.
         #[arg(long)]
@@ -155,14 +167,14 @@ async fn run() -> Result<()> {
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistRename { kind, title } => {
-            let playlist = client
-                .rename_playlist(uid, playlist_kind(kind)?, title)
-                .await?;
+            let (owner, kind) = playlist_target(kind, &uid)?;
+            let playlist = client.rename_playlist(owner, kind, title).await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistVisibility { kind, visibility } => {
+            let (owner, kind) = playlist_target(kind, &uid)?;
             let playlist = client
-                .set_playlist_visibility(uid, playlist_kind(kind)?, visibility.into())
+                .set_playlist_visibility(owner, kind, visibility.into())
                 .await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
@@ -172,35 +184,36 @@ async fn run() -> Result<()> {
             album,
             at,
         } => {
-            let kind = playlist_kind(kind)?;
+            let (owner, kind) = playlist_target(kind, &uid)?;
             let album_id = album
                 .as_ref()
                 .map(AlbumRef::album_id)
                 .or_else(|| track.album_id())
                 .context("album ID is required when the track is not an album/track URL")?;
-            let current = client.playlist(uid.clone(), kind.clone()).await?;
+            let current = client.playlist(owner.clone(), kind.clone()).await?;
             let revision = playlist_revision(&current)?;
             let diff =
                 PlaylistDiff::new().insert(at, [PlaylistTrackId::new(track.track_id(), album_id)]);
-            let playlist = client.change_playlist(uid, kind, revision, &diff).await?;
+            let playlist = client.change_playlist(owner, kind, revision, &diff).await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistRemove { kind, from, to } => {
             if from >= to {
                 bail!("invalid range: --from must be smaller than --to");
             }
-            let kind = playlist_kind(kind)?;
-            let current = client.playlist(uid.clone(), kind.clone()).await?;
+            let (owner, kind) = playlist_target(kind, &uid)?;
+            let current = client.playlist(owner.clone(), kind.clone()).await?;
             let revision = playlist_revision(&current)?;
             let diff = PlaylistDiff::new().delete(from, to);
-            let playlist = client.change_playlist(uid, kind, revision, &diff).await?;
+            let playlist = client.change_playlist(owner, kind, revision, &diff).await?;
             print_playlist(&mut output, cli.json, &playlist)?;
         }
         Command::PlaylistDelete { kind, yes } => {
             if !yes {
                 bail!("refusing permanent deletion without --yes");
             }
-            client.delete_playlist(uid, playlist_kind(kind)?).await?;
+            let (owner, kind) = playlist_target(kind, &uid)?;
+            client.delete_playlist(owner, kind).await?;
             writeln!(output, "playlist deleted")?;
         }
     }
@@ -223,11 +236,12 @@ fn playlist_revision(playlist: &Playlist) -> Result<u64> {
         .context("playlist response does not contain a revision")
 }
 
-fn playlist_kind(value: String) -> Result<String> {
+fn playlist_target(value: String, current_uid: &Id) -> Result<(Id, String)> {
     if value.contains("://") {
-        Ok(value.parse::<PlaylistRef>()?.kind().to_owned())
+        let playlist = value.parse::<PlaylistRef>()?;
+        Ok((Id::from(playlist.owner()), playlist.kind().to_owned()))
     } else {
-        Ok(value)
+        Ok((current_uid.clone(), value))
     }
 }
 
@@ -258,4 +272,48 @@ fn print_value(
         writeln!(output, "{}", summary())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playlist_add_preserves_owner_from_playlist_url() {
+        let cli = Cli::try_parse_from([
+            "yamu-edit",
+            "playlist-add",
+            "https://music.yandex.ru/users/example/playlists/42?utm_source=web",
+            "https://music.yandex.ru/album/1193829/track/10994777?utm_source=web",
+            "--at",
+            "3",
+        ])
+        .unwrap();
+
+        let Command::PlaylistAdd {
+            kind,
+            track,
+            album,
+            at,
+        } = cli.command
+        else {
+            panic!("expected playlist-add command");
+        };
+        let (owner, kind) = playlist_target(kind, &Id::from("current-user")).unwrap();
+        assert_eq!(owner.to_string(), "example");
+        assert_eq!(kind, "42");
+        assert_eq!(track.track_id(), "10994777");
+        assert_eq!(track.album_id(), Some("1193829"));
+        assert!(album.is_none());
+        assert_eq!(at, 3);
+    }
+
+    #[test]
+    fn compact_playlist_kind_uses_the_current_account() {
+        let current = Id::from("current-user");
+        let (owner, kind) = playlist_target("42".to_owned(), &current).unwrap();
+
+        assert_eq!(owner, current);
+        assert_eq!(kind, "42");
+    }
 }

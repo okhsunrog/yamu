@@ -1,4 +1,6 @@
-use yamu::resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef};
+use yamu::resource::{
+    AlbumRef, ArtistRef, PlaylistRef, PlaylistSourceRef, PlaylistUuidRef, TrackRef,
+};
 
 #[test]
 fn parses_track_url_and_discards_non_semantic_parts() {
@@ -21,6 +23,13 @@ fn parses_simple_ids_and_resource_urls() {
         "19097174"
     );
     assert_eq!(
+        "https://music.yandex.ru/album/19097174?utm_source=copy"
+            .parse::<AlbumRef>()
+            .unwrap()
+            .album_id(),
+        "19097174"
+    );
+    assert_eq!(
         "https://music.yandex.ru/artist/123?utm_source=copy"
             .parse::<ArtistRef>()
             .unwrap()
@@ -33,6 +42,33 @@ fn parses_simple_ids_and_resource_urls() {
     assert_eq!(playlist.owner(), "example");
     assert_eq!(playlist.kind(), "42");
     assert_eq!("example:42".parse::<PlaylistRef>().unwrap(), playlist);
+}
+
+#[test]
+fn parses_current_playlist_uuid_urls() {
+    let uuid = "fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f";
+    let reference: PlaylistSourceRef = format!(
+        "https://music.yandex.ru/playlists/{uuid}?utm_source=web&utm_medium=copy_link#player"
+    )
+    .parse()
+    .unwrap();
+
+    let PlaylistSourceRef::Uuid(reference) = reference else {
+        panic!("expected UUID playlist reference");
+    };
+    assert_eq!(reference.playlist_uuid(), uuid);
+    assert_eq!(
+        reference.canonical_url().as_str(),
+        format!("https://music.yandex.ru/playlists/{uuid}")
+    );
+    assert_eq!(
+        format!("lk.{uuid}")
+            .parse::<PlaylistUuidRef>()
+            .unwrap()
+            .playlist_uuid(),
+        format!("lk.{uuid}")
+    );
+    assert!("not-a-uuid".parse::<PlaylistUuidRef>().is_err());
 }
 
 #[test]

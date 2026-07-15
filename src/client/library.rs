@@ -65,4 +65,10 @@ impl Client {
         )
         .await
     }
+
+    /// Returns one playlist addressed by its current public UUID.
+    pub async fn playlist_by_uuid(&self, playlist_uuid: impl AsRef<str>) -> Result<Playlist> {
+        self.get_segments(["playlist", playlist_uuid.as_ref()], &())
+            .await
+    }
 }

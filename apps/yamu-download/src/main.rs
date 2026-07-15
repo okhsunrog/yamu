@@ -19,7 +19,7 @@ use yamu::{
     downloader::{CancellationToken, DownloadEvent, DownloadRequest, Downloader},
     media::ffmpeg_cli::FfmpegCli,
     models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Track},
-    resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
+    resource::{AlbumRef, ArtistRef, PlaylistSourceRef, TrackRef},
 };
 
 mod atomic_file;
@@ -57,7 +57,7 @@ struct Cli {
 enum Command {
     /// Download one track.
     Track {
-        /// Numeric track ID or Yandex Music track URL.
+        /// Yandex Music track URL or numeric track ID.
         track: TrackRef,
         /// Highest requested quality; the server may return a lower tier.
         #[arg(long, default_value_t = DownloadQuality::Lossless)]
@@ -71,7 +71,7 @@ enum Command {
     },
     /// Download every track from an album in disc and track order.
     Album {
-        /// Numeric album ID or Yandex Music album URL.
+        /// Yandex Music album URL or numeric album ID.
         album: AlbumRef,
         /// Destination directory; defaults to `artist - album (year)`.
         #[arg(short, long)]
@@ -106,7 +106,7 @@ enum Command {
     },
     /// Download an artist's complete track catalog.
     Artist {
-        /// Numeric artist ID or Yandex Music artist URL.
+        /// Yandex Music artist URL or numeric artist ID.
         artist: ArtistRef,
         /// Destination directory; defaults to the artist name.
         #[arg(short, long)]
@@ -126,8 +126,8 @@ enum Command {
     },
     /// Download every track from a playlist in playlist order.
     Playlist {
-        /// Playlist as owner:kind or a Yandex Music playlist URL.
-        playlist: PlaylistRef,
+        /// Yandex Music playlist URL, UUID, or compact owner:kind reference.
+        playlist: PlaylistSourceRef,
         /// Destination directory; defaults to a sanitized playlist title.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -152,8 +152,8 @@ enum Command {
 enum SyncCommand {
     /// Synchronize a playlist with its current remote contents.
     Playlist {
-        /// Playlist as owner:kind or a Yandex Music playlist URL.
-        playlist: PlaylistRef,
+        /// Yandex Music playlist URL, UUID, or compact owner:kind reference.
+        playlist: PlaylistSourceRef,
         /// Destination directory; defaults to a sanitized playlist title.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -522,7 +522,7 @@ async fn download_artist(
 }
 
 struct PlaylistDownloadRequest {
-    playlist: PlaylistRef,
+    playlist: PlaylistSourceRef,
     quality: DownloadQuality,
     output: Option<PathBuf>,
     force: bool,
@@ -545,9 +545,18 @@ async fn download_playlist(
         sync,
         lyrics,
     } = request;
-    let owner = playlist.owner().to_owned();
-    let kind = playlist.kind().to_owned();
-    let playlist = client.playlist(owner.as_str(), kind.as_str()).await?;
+    let (playlist, source_id) = match playlist {
+        PlaylistSourceRef::User(reference) => {
+            let source_id = format!("{}:{}", reference.owner(), reference.kind());
+            let playlist = client.playlist(reference.owner(), reference.kind()).await?;
+            (playlist, source_id)
+        }
+        PlaylistSourceRef::Uuid(reference) => {
+            let source_id = format!("uuid:{}", reference.playlist_uuid());
+            let playlist = client.playlist_by_uuid(reference.playlist_uuid()).await?;
+            (playlist, source_id)
+        }
+    };
     let directory = output.unwrap_or_else(|| {
         PathBuf::from(safe_file_component(
             playlist.title.as_deref().unwrap_or("playlist"),
@@ -607,7 +616,7 @@ async fn download_playlist(
         jobs,
         &directory,
         "playlist",
-        &format!("{owner}:{kind}"),
+        &source_id,
         jobs_to_run,
         sync,
         lyrics,
@@ -995,6 +1004,8 @@ async fn enrich_and_mark(
         lyrics_format,
     )
     .await?;
+    let extension = normalized_path_extension(audio_path)?;
+    verify_audio_file(audio_path, &extension).await?;
     write_enrichment_marker(audio_path, saved_lyrics).await
 }
 
@@ -1163,6 +1174,13 @@ fn normalized_extension(info: &DownloadInfo) -> &'static str {
     }
 }
 
+fn normalized_path_extension(path: &Path) -> Result<String> {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .context("audio path must contain a UTF-8 extension")
+}
+
 fn validate_output_extension(mut output: PathBuf, info: &DownloadInfo) -> Result<PathBuf> {
     let expected = normalized_extension(info);
     match output.extension().and_then(|extension| extension.to_str()) {
@@ -1310,6 +1328,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_yandex_music_urls_for_every_resource_command() {
+        let cli = Cli::try_parse_from([
+            "yamu-download",
+            "track",
+            "https://music.yandex.ru/album/1193829/track/10994777?utm_source=web#player",
+        ])
+        .unwrap();
+        let Command::Track { track, .. } = cli.command else {
+            panic!("expected track command");
+        };
+        assert_eq!(track.track_id(), "10994777");
+        assert_eq!(track.album_id(), Some("1193829"));
+
+        let cli = Cli::try_parse_from([
+            "yamu-download",
+            "album",
+            "https://music.yandex.ru/album/1193829?utm_source=web",
+        ])
+        .unwrap();
+        let Command::Album { album, .. } = cli.command else {
+            panic!("expected album command");
+        };
+        assert_eq!(album.album_id(), "1193829");
+
+        let cli = Cli::try_parse_from([
+            "yamu-download",
+            "artist",
+            "https://music.yandex.ru/artist/1556?utm_source=web",
+        ])
+        .unwrap();
+        let Command::Artist { artist, .. } = cli.command else {
+            panic!("expected artist command");
+        };
+        assert_eq!(artist.artist_id(), "1556");
+
+        let playlist_url = "https://music.yandex.ru/playlists/fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f?utm_source=web&utm_medium=copy_link";
+        let cli = Cli::try_parse_from(["yamu-download", "playlist", playlist_url]).unwrap();
+        let Command::Playlist { playlist, .. } = cli.command else {
+            panic!("expected playlist command");
+        };
+        let PlaylistSourceRef::Uuid(playlist) = playlist else {
+            panic!("expected UUID playlist reference");
+        };
+        assert_eq!(
+            playlist.playlist_uuid(),
+            "fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f"
+        );
+
+        let owner_kind_url = "https://music.yandex.ru/users/example/playlists/42?utm_source=web";
+        let cli =
+            Cli::try_parse_from(["yamu-download", "sync", "playlist", owner_kind_url]).unwrap();
+        let Command::Sync {
+            source: SyncCommand::Playlist { playlist, .. },
+        } = cli.command
+        else {
+            panic!("expected sync playlist command");
+        };
+        let PlaylistSourceRef::User(playlist) = playlist else {
+            panic!("expected user playlist reference");
+        };
+        assert_eq!(playlist.owner(), "example");
+        assert_eq!(playlist.kind(), "42");
+    }
+
+    #[test]
     fn builds_safe_default_track_filename() {
         let metadata = TrackMetadata {
             title: "Song: Part 1".to_owned(),
@@ -1327,6 +1410,22 @@ mod tests {
         assert_eq!(
             default_track_filename(&metadata, "flac"),
             "Artist_Band - Song_ Part 1.flac"
+        );
+    }
+
+    #[test]
+    fn normalizes_case_of_output_extension_for_verification() {
+        assert_eq!(
+            normalized_path_extension(Path::new("track.FLAC")).unwrap(),
+            "flac"
+        );
+        assert_eq!(
+            normalized_path_extension(Path::new("track.M4A")).unwrap(),
+            "m4a"
+        );
+        assert_eq!(
+            normalized_path_extension(Path::new("track.MP3")).unwrap(),
+            "mp3"
         );
     }
 

@@ -133,3 +133,32 @@ async fn fetches_full_playlist() {
     );
     assert_eq!(playlist.pager.unwrap().total, Some(1));
 }
+
+#[tokio::test]
+async fn fetches_playlist_by_public_uuid() {
+    let server = MockServer::start().await;
+    let uuid = "fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f";
+    Mock::given(method("GET"))
+        .and(path(format!("/playlist/{uuid}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "owner": { "uid": 42, "login": "alice" },
+                "kind": "100",
+                "playlistUuid": uuid,
+                "title": "Shared playlist",
+                "tracks": [{
+                    "id": "10",
+                    "albumId": "20",
+                    "track": { "id": "10", "title": "First" }
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let playlist = client_for(&server).playlist_by_uuid(uuid).await.unwrap();
+
+    assert_eq!(playlist.playlist_uuid.as_deref(), Some(uuid));
+    assert_eq!(playlist.playlist_id().unwrap().to_string(), "42:100");
+    assert_eq!(playlist.tracks[0].track_id(), "10:20");
+}

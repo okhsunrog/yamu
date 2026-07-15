@@ -3,11 +3,12 @@
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use ffmpeg_next as av;
 
-use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime};
+use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime, ensure_decoded_duration};
 use crate::atomic_file;
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -82,8 +83,16 @@ impl MediaBackend for Ffmpeg {
         .await?
     }
 
+    async fn verify_audio(&self, path: PathBuf, expected_duration: Option<Duration>) -> Result<()> {
+        let actual_duration = tokio::task::spawn_blocking(move || decode_audio(&path)).await??;
+        match expected_duration {
+            Some(expected_duration) => ensure_decoded_duration(expected_duration, actual_duration),
+            None => Ok(()),
+        }
+    }
+
     async fn verify_m4a(&self, path: PathBuf) -> Result<()> {
-        tokio::task::spawn_blocking(move || decode_audio(&path)).await?
+        tokio::task::spawn_blocking(move || decode_audio(&path).map(|_| ())).await?
     }
 }
 
@@ -197,13 +206,13 @@ fn remux_audio(
     Ok(())
 }
 
-fn decode_audio(path: &Path) -> Result<()> {
+fn decode_audio(path: &Path) -> Result<Duration> {
     initialize()?;
-    let mut input = av::format::input(path).map_err(av_error("failed to open M4A"))?;
+    let mut input = av::format::input(path).map_err(av_error("failed to open audio file"))?;
     let stream = input
         .streams()
         .best(av::media::Type::Audio)
-        .ok_or_else(|| backend("M4A contains no audio stream"))?;
+        .ok_or_else(|| backend("file contains no audio stream"))?;
     let index = stream.index();
     let context = av::codec::context::Context::from_parameters(stream.parameters())
         .map_err(av_error("failed to create audio decoder"))?;
@@ -212,7 +221,7 @@ fn decode_audio(path: &Path) -> Result<()> {
         .audio()
         .map_err(av_error("failed to open audio decoder"))?;
     let mut frame = av::frame::Audio::empty();
-    let mut decoded_frames = 0_usize;
+    let mut decoded_samples = 0_u64;
     for (stream, packet) in input.packets() {
         if stream.index() != index {
             continue;
@@ -220,16 +229,22 @@ fn decode_audio(path: &Path) -> Result<()> {
         decoder
             .send_packet(&packet)
             .map_err(av_error("failed to send audio packet"))?;
-        decoded_frames += drain_decoder(&mut decoder, &mut frame)?;
+        decoded_samples += drain_decoder(&mut decoder, &mut frame)?;
     }
     decoder
         .send_eof()
         .map_err(av_error("failed to flush audio decoder"))?;
-    decoded_frames += drain_decoder(&mut decoder, &mut frame)?;
-    if decoded_frames == 0 {
-        return Err(backend("M4A decoder produced no audio frames"));
+    decoded_samples += drain_decoder(&mut decoder, &mut frame)?;
+    if decoded_samples == 0 {
+        return Err(backend("decoder produced no audio frames"));
     }
-    Ok(())
+    let sample_rate = decoder.rate();
+    if sample_rate == 0 {
+        return Err(backend("decoder reported a zero sample rate"));
+    }
+    Ok(Duration::from_secs_f64(
+        decoded_samples as f64 / f64::from(sample_rate),
+    ))
 }
 
 struct AudioTranscoder {
@@ -492,17 +507,17 @@ fn is_drain_complete(error: av::Error) -> bool {
         || matches!(error, av::Error::Other { errno } if errno == av::error::EAGAIN)
 }
 
-fn drain_decoder(decoder: &mut av::decoder::Audio, frame: &mut av::frame::Audio) -> Result<usize> {
-    let mut count = 0;
+fn drain_decoder(decoder: &mut av::decoder::Audio, frame: &mut av::frame::Audio) -> Result<u64> {
+    let mut samples = 0_u64;
     loop {
         match decoder.receive_frame(frame) {
-            Ok(()) => count += 1,
+            Ok(()) => samples += frame.samples() as u64,
             Err(av::Error::Other { errno }) if errno == av::error::EAGAIN => break,
             Err(av::Error::Eof) => break,
             Err(error) => return Err(backend(format!("audio decode failed: {error}"))),
         }
     }
-    Ok(count)
+    Ok(samples)
 }
 
 fn metadata_dictionary(metadata: &TrackMetadata) -> av::Dictionary<'static> {

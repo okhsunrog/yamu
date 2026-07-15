@@ -4,7 +4,10 @@
 //! are selected independently: `media-ffmpeg-cli` invokes an installed
 //! executable, while `media-ffmpeg` links to FFmpeg libraries in-process.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use lofty::{
     config::WriteOptions,
@@ -80,6 +83,30 @@ pub trait MediaBackend: Clone + Send + Sync + 'static {
         replace: bool,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Fully decodes an audio file when the backend supports generic validation.
+    ///
+    /// The default keeps existing third-party backends source-compatible. The
+    /// built-in FFmpeg backends override it for MP3 and FLAC validation. The
+    /// expected duration is absent when the container cannot provide an
+    /// authoritative value, as with VBR MP3 files lacking Xing/VBRI metadata.
+    fn verify_audio(
+        &self,
+        path: PathBuf,
+        _expected_duration: Option<Duration>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            if extension_is(&path, "m4a") {
+                self.verify_m4a(path).await
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Fully decodes an M4A file.
+    ///
+    /// This method predates generic validation and remains required for
+    /// compatibility with existing media backend implementations.
     fn verify_m4a(&self, path: PathBuf) -> impl Future<Output = Result<()>> + Send;
 }
 
@@ -100,7 +127,7 @@ pub async fn write_metadata<B: MediaBackend>(
     tokio::task::spawn_blocking(move || write_metadata_blocking(&path, &metadata, artwork)).await?
 }
 
-/// Verify the container and duration, fully decoding M4A through the backend.
+/// Verify the container and duration, fully decoding audio through the backend.
 pub async fn verify_audio_file<B: MediaBackend>(
     backend: &B,
     path: &Path,
@@ -109,11 +136,10 @@ pub async fn verify_audio_file<B: MediaBackend>(
     let path = path.to_owned();
     let extension = expected_extension.to_owned();
     let blocking_path = path.clone();
-    tokio::task::spawn_blocking(move || verify_audio_file_blocking(&blocking_path, &extension))
-        .await??;
-    if expected_extension.eq_ignore_ascii_case("m4a") {
-        backend.verify_m4a(path).await?;
-    }
+    let expected_duration =
+        tokio::task::spawn_blocking(move || verify_audio_file_blocking(&blocking_path, &extension))
+            .await??;
+    backend.verify_audio(path, expected_duration).await?;
     Ok(())
 }
 
@@ -145,7 +171,7 @@ fn write_metadata_blocking(
     Ok(())
 }
 
-fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<()> {
+fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<Option<Duration>> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() < 1024 {
         return Err(Error::Backend(format!(
@@ -155,10 +181,13 @@ fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<(
     }
     let file = lofty::read_from_path(path)
         .map_err(|error| Error::Backend(format!("failed to parse {}: {error}", path.display())))?;
-    let expected_type = match expected_extension {
-        "flac" => FileType::Flac,
-        "m4a" => FileType::Mp4,
-        "mp3" => FileType::Mpeg,
+    let (expected_type, compare_decoded_duration) = match expected_extension {
+        "flac" => (FileType::Flac, true),
+        "m4a" => (FileType::Mp4, true),
+        // An MP3 without a Xing/VBRI frame count has no authoritative
+        // container duration. Lofty must estimate it from a frame bitrate,
+        // which can be far from the decoded duration for valid VBR files.
+        "mp3" => (FileType::Mpeg, false),
         extension => {
             return Err(Error::Backend(format!(
                 "unsupported extension .{extension}"
@@ -171,8 +200,23 @@ fn verify_audio_file_blocking(path: &Path, expected_extension: &str) -> Result<(
             file.file_type()
         )));
     }
-    if file.properties().duration().is_zero() {
+    let duration = file.properties().duration();
+    if duration.is_zero() {
         return Err(Error::Backend("audio duration is zero".to_owned()));
+    }
+    Ok(compare_decoded_duration.then_some(duration))
+}
+
+pub(crate) fn ensure_decoded_duration(expected: Duration, actual: Duration) -> Result<()> {
+    const TOLERANCE: Duration = Duration::from_millis(250);
+    let difference = expected.abs_diff(actual);
+    if difference > TOLERANCE {
+        return Err(Error::Backend(format!(
+            "decoded audio duration {:.3}s differs from container duration {:.3}s by {:.3}s",
+            actual.as_secs_f64(),
+            expected.as_secs_f64(),
+            difference.as_secs_f64(),
+        )));
     }
     Ok(())
 }
@@ -228,7 +272,11 @@ pub(crate) fn extension_is(path: &Path, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedLyrics, TrackMetadata, apply_text_metadata, detect_mime};
+    use std::time::Duration;
+
+    use super::{
+        EmbeddedLyrics, TrackMetadata, apply_text_metadata, detect_mime, ensure_decoded_duration,
+    };
     use lofty::{
         picture::MimeType,
         tag::{ItemKey, Tag, TagType},
@@ -252,5 +300,14 @@ mod tests {
         let mut tag = Tag::new(TagType::VorbisComments);
         apply_text_metadata(&mut tag, &metadata);
         assert_eq!(tag.get_string(ItemKey::Lyrics), Some("[00:00]line"));
+    }
+
+    #[test]
+    fn decoded_duration_tolerance_includes_its_boundary() {
+        let expected = Duration::from_secs(10);
+        assert!(ensure_decoded_duration(expected, expected + Duration::from_millis(250)).is_ok());
+        assert!(ensure_decoded_duration(expected, expected - Duration::from_millis(250)).is_ok());
+        assert!(ensure_decoded_duration(expected, expected + Duration::from_millis(251)).is_err());
+        assert!(ensure_decoded_duration(expected, expected - Duration::from_millis(251)).is_err());
     }
 }

@@ -16,7 +16,7 @@ command-line tools.
 - `yamu` — async API client, models and OAuth Device Flow.
 - `yamu`'s `credentials` feature — shared local credential storage for workspace applications.
 - `yamu-auth` — login, logout and credential inspection tool.
-- `yamu-download` — atomic single-track downloader using negotiated CDN streams.
+- `yamu-download` — atomic track and collection downloader using negotiated CDN streams.
 - `yamu-inspect` — read-only API exploration client.
 - `yamu-edit` — explicit liked-track and playlist mutation client.
 
@@ -98,17 +98,16 @@ redacted from `Debug` output.
 ```console
 cargo run -p yamu-inspect -- account
 cargo run -p yamu-inspect -- search "Boards of Canada"
-cargo run -p yamu-inspect -- track 10994777
-cargo run -p yamu-inspect -- track 'https://music.yandex.ru/album/1193829/track/10994777?utm_source=web'
-cargo run -p yamu-inspect -- album 1193829
+cargo run -p yamu-inspect -- track 'https://music.yandex.ru/album/1193829/track/10994777'
+cargo run -p yamu-inspect -- album 'https://music.yandex.ru/album/1193829'
 cargo run -p yamu-inspect -- likes --limit 20
 cargo run -p yamu-inspect -- playlists
-cargo run -p yamu-inspect -- playlist <owner>:<kind>
-cargo run -p yamu-inspect -- artist <id>
-cargo run -p yamu-inspect -- artist-tracks <id> --page-size 100
-cargo run -p yamu-inspect -- artist-albums <id> --page-size 100
-cargo run -p yamu-inspect -- lyrics <track-id> --lrc
-cargo run -p yamu-inspect -- playlist-recommendations <owner>:<kind>
+cargo run -p yamu-inspect -- playlist '<playlist-url>'
+cargo run -p yamu-inspect -- artist 'https://music.yandex.ru/artist/1556'
+cargo run -p yamu-inspect -- artist-tracks 'https://music.yandex.ru/artist/1556' --page-size 100
+cargo run -p yamu-inspect -- artist-albums 'https://music.yandex.ru/artist/1556' --page-size 100
+cargo run -p yamu-inspect -- lyrics 'https://music.yandex.ru/album/1193829/track/10994777' --lrc
+cargo run -p yamu-inspect -- playlist-recommendations '<owner-kind-playlist-url>'
 cargo run -p yamu-inspect -- stations
 cargo run -p yamu-inspect -- station-tracks user onyourwave
 ```
@@ -127,14 +126,14 @@ retried automatically. Artist tracks and albums expose both explicit
 `yamu-edit` keeps mutations separate from the read-only inspector:
 
 ```console
-cargo run -p yamu-edit -- like <track-id>...
-cargo run -p yamu-edit -- unlike <track-id>...
+cargo run -p yamu-edit -- like 'https://music.yandex.ru/album/1193829/track/10994777'
+cargo run -p yamu-edit -- unlike 'https://music.yandex.ru/album/1193829/track/10994777'
 cargo run -p yamu-edit -- playlist-create "My playlist"
-cargo run -p yamu-edit -- playlist-rename <kind> "New title"
-cargo run -p yamu-edit -- playlist-visibility <kind> public
-cargo run -p yamu-edit -- playlist-add <kind> <track-id> <album-id> --at 0
-cargo run -p yamu-edit -- playlist-remove <kind> --from 0 --to 1
-cargo run -p yamu-edit -- playlist-delete <kind> --yes
+cargo run -p yamu-edit -- playlist-rename <playlist-kind> "New title"
+cargo run -p yamu-edit -- playlist-visibility <playlist-kind> public
+cargo run -p yamu-edit -- playlist-add <playlist-kind> 'https://music.yandex.ru/album/1193829/track/10994777' --at 0
+cargo run -p yamu-edit -- playlist-remove <playlist-kind> --from 0 --to 1
+cargo run -p yamu-edit -- playlist-delete <playlist-kind> --yes
 ```
 
 Playlist track changes first fetch the current revision and submit a typed
@@ -148,24 +147,28 @@ The `downloads` feature implements the signed `get-file-info` negotiation and
 opens short-lived CDN response streams without forwarding the OAuth token:
 
 ```console
-cargo run -p yamu-download -- track <track-id>
-cargo run -p yamu-download -- track <yandex-music-track-url>
-cargo run -p yamu-download -- track <track-id> --quality normal -o track.mp3
-cargo run -p yamu-download -- album <album-id-or-url> --jobs 4
-cargo run -p yamu-download -- playlist <owner>:<kind> -o ./playlist --jobs 4
-cargo run -p yamu-download -- playlist <yandex-music-playlist-url>
+cargo run -p yamu-download -- track 'https://music.yandex.ru/album/1193829/track/10994777'
+cargo run -p yamu-download -- track 'https://music.yandex.ru/album/1193829/track/10994777' --quality normal -o track
+cargo run -p yamu-download -- album 'https://music.yandex.ru/album/1193829' --jobs 4
+cargo run -p yamu-download -- playlist '<playlist-url>' -o ./playlist --jobs 4
 cargo run -p yamu-download -- liked -o ./liked --jobs 4
-cargo run -p yamu-download -- artist <artist-id-or-url> --limit 100
-cargo run -p yamu-download -- sync playlist <playlist-url> -o ./playlist
+cargo run -p yamu-download -- artist 'https://music.yandex.ru/artist/1556' --limit 100
+cargo run -p yamu-download -- sync playlist '<playlist-url>' -o ./playlist
 cargo run -p yamu-download -- sync liked -o ./liked --dry-run
 cargo run -p yamu-download -- sync liked -o ./liked --prune
-cargo run -p yamu-download -- track <track-url> --lyrics
-cargo run -p yamu-download -- album <album-url> --lyrics lrc
+cargo run -p yamu-download -- track 'https://music.yandex.ru/album/1193829/track/10994777' --lyrics
+cargo run -p yamu-download -- album 'https://music.yandex.ru/album/1193829' --lyrics lrc
 ```
 
-Track, album, artist, and playlist arguments accept canonical Yandex Music
-links as well as compact IDs. URL query parameters and fragments, including
-copy-link `utm_*` parameters, are discarded during parsing.
+Paste the regular Yandex Music link from the browser or app for track, album,
+artist, and playlist arguments. Compact IDs are also accepted for scripts and
+advanced use. URL query parameters and fragments, including copy-link `utm_*`
+parameters, are discarded during parsing.
+
+Shared playlist links in the current `/playlists/<uuid>` form are supported,
+including the observed two-letter-prefixed UUID forms. User-scoped
+`/users/<owner>/playlists/<kind>` links and compact `owner:kind` references
+remain supported as well.
 
 Album downloads use `Artist - Album (year)` directories. Multi-disc releases
 are split into `CD1`, `CD2`, and so on, while files retain disc-local track

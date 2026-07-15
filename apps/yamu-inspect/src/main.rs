@@ -11,7 +11,7 @@ use yamu::{
         Album, ArtistAlbumSort, Id, LyricsFormat, PageRequest, Playlist, SearchResult, StationId,
         Track,
     },
-    resource::{AlbumRef, ArtistRef, PlaylistRef, TrackRef},
+    resource::{AlbumRef, ArtistRef, PlaylistRef, PlaylistSourceRef, TrackRef},
 };
 
 #[derive(Debug, Parser)]
@@ -38,13 +38,17 @@ enum Command {
         #[arg(required = true)]
         query: Vec<String>,
     },
-    /// Fetch one or more tracks by ID.
+    /// Fetch one or more tracks by Yandex Music URL or ID.
     Track {
+        /// Yandex Music track URLs or compact track IDs.
         #[arg(required = true)]
         tracks: Vec<TrackRef>,
     },
     /// Fetch an album together with its tracks.
-    Album { album: AlbumRef },
+    Album {
+        /// Yandex Music album URL or compact album ID.
+        album: AlbumRef,
+    },
     /// Show liked tracks from the current account.
     Likes {
         /// Maximum number of full tracks to fetch and print.
@@ -53,12 +57,19 @@ enum Command {
     },
     /// List playlists belonging to the current account.
     Playlists,
-    /// Fetch a playlist by owner and kind.
-    Playlist { playlist: PlaylistRef },
-    /// Fetch an artist by ID.
-    Artist { artist: ArtistRef },
+    /// Fetch a playlist by Yandex Music URL or owner and kind.
+    Playlist {
+        /// Yandex Music playlist URL, UUID, or compact owner:kind reference.
+        playlist: PlaylistSourceRef,
+    },
+    /// Fetch an artist by Yandex Music URL or ID.
+    Artist {
+        /// Yandex Music artist URL or compact artist ID.
+        artist: ArtistRef,
+    },
     /// Fetch one page of an artist's tracks.
     ArtistTracks {
+        /// Yandex Music artist URL or compact artist ID.
         artist: ArtistRef,
         #[arg(long, default_value_t = 0)]
         page: u32,
@@ -67,6 +78,7 @@ enum Command {
     },
     /// Fetch one page of an artist's albums.
     ArtistAlbums {
+        /// Yandex Music artist URL or compact artist ID.
         artist: ArtistRef,
         #[arg(long, default_value_t = 0)]
         page: u32,
@@ -75,12 +87,16 @@ enum Command {
     },
     /// Fetch plain or synchronized lyrics.
     Lyrics {
+        /// Yandex Music track URL or compact track ID.
         track: TrackRef,
         #[arg(long)]
         lrc: bool,
     },
     /// Fetch track recommendations for a playlist.
-    PlaylistRecommendations { playlist: PlaylistRef },
+    PlaylistRecommendations {
+        /// User-scoped owner/kind URL or compact owner:kind reference.
+        playlist: PlaylistRef,
+    },
     /// List Rotor radio stations.
     Stations {
         #[arg(long, default_value = "ru")]
@@ -218,7 +234,14 @@ async fn run() -> Result<()> {
             }
         }
         Command::Playlist { playlist } => {
-            let playlist = client.playlist(playlist.owner(), playlist.kind()).await?;
+            let playlist = match playlist {
+                PlaylistSourceRef::User(reference) => {
+                    client.playlist(reference.owner(), reference.kind()).await?
+                }
+                PlaylistSourceRef::Uuid(reference) => {
+                    client.playlist_by_uuid(reference.playlist_uuid()).await?
+                }
+            };
             let mut output = io::stdout().lock();
             if cli.json {
                 print_json(&mut output, &playlist)?;
@@ -478,4 +501,40 @@ fn print_playlist(output: &mut impl Write, playlist: &Playlist) -> io::Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_track_and_playlist_urls_at_the_cli_boundary() {
+        let cli = Cli::try_parse_from([
+            "yamu-inspect",
+            "track",
+            "https://music.yandex.ru/album/1193829/track/10994777?utm_source=web",
+        ])
+        .unwrap();
+        let Command::Track { tracks } = cli.command else {
+            panic!("expected track command");
+        };
+        assert_eq!(tracks[0].track_id(), "10994777");
+
+        let cli = Cli::try_parse_from([
+            "yamu-inspect",
+            "playlist",
+            "https://music.yandex.ru/playlists/fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f?utm_source=web",
+        ])
+        .unwrap();
+        let Command::Playlist { playlist } = cli.command else {
+            panic!("expected playlist command");
+        };
+        let PlaylistSourceRef::Uuid(playlist) = playlist else {
+            panic!("expected UUID playlist reference");
+        };
+        assert_eq!(
+            playlist.playlist_uuid(),
+            "fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f"
+        );
+    }
 }
