@@ -27,3 +27,11 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo package -p yamu --locked
+
+  windows-media:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - name: Test Windows media file handling
+        run: cargo test -p yamu --lib --features media-ffmpeg-cli --locked

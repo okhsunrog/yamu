@@ -160,10 +160,7 @@ async fn write_m4a_metadata(
             .await
             .map_err(|error| backend(format!("failed to run ffmpeg for M4A tags: {error}")))?;
         ensure_success(output, "ffmpeg M4A metadata remux")?;
-        tokio::fs::File::open(&output_path)
-            .await?
-            .sync_all()
-            .await?;
+        sync_file(&output_path).await?;
         replace_file(&output_path, path, true)
     }
     .await;
@@ -204,7 +201,7 @@ async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<
             .await
             .map_err(|error| backend(format!("failed to run ffmpeg for FLAC remux: {error}")))?;
         ensure_success(output, "ffmpeg FLAC remux")?;
-        tokio::fs::File::open(&temporary).await?.sync_all().await?;
+        sync_file(&temporary).await?;
         replace_file(&temporary, destination, replace)
     }
     .await;
@@ -249,7 +246,7 @@ async fn transcode_mp3(
             .await
             .map_err(|error| backend(format!("failed to run ffmpeg for MP3 transcode: {error}")))?;
         ensure_success(output, "ffmpeg MP3 transcode")?;
-        tokio::fs::File::open(&temporary).await?.sync_all().await?;
+        sync_file(&temporary).await?;
         replace_file(&temporary, destination, replace)
     }
     .await;
@@ -263,6 +260,28 @@ fn push_metadata(command: &mut Command, key: &str, value: Option<&str>) {
     if let Some(value) = value {
         command.arg("-metadata").arg(format!("{key}={value}"));
     }
+}
+
+async fn sync_file(path: &Path) -> Result<()> {
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .await
+        .map_err(|error| {
+            backend(format!(
+                "failed to open temporary media output {} for syncing: {error}",
+                path.display()
+            ))
+        })?;
+    file.sync_all().await.map_err(|error| {
+        backend(format!(
+            "failed to sync temporary media output {}: {error}",
+            path.display()
+        ))
+    })?;
+    drop(file);
+    Ok(())
 }
 
 fn ensure_success(output: std::process::Output, operation: &str) -> Result<()> {
@@ -282,7 +301,13 @@ fn ensure_success_ref(output: &std::process::Output, operation: &str) -> Result<
 }
 
 fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
-    atomic_file::persist(source, destination, replace).map_err(Error::from)
+    atomic_file::persist(source, destination, replace).map_err(|error| {
+        backend(format!(
+            "failed to publish temporary media output {} as {}: {error}",
+            source.display(),
+            destination.display()
+        ))
+    })
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
@@ -297,4 +322,18 @@ fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
 
 fn backend(message: impl Into<String>) -> Error {
     Error::Backend(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_file;
+
+    #[tokio::test]
+    async fn syncs_temporary_output_through_a_writable_handle() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("media-output.m4a");
+        tokio::fs::write(&path, b"test").await.unwrap();
+
+        sync_file(&path).await.unwrap();
+    }
 }

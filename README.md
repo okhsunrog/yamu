@@ -143,6 +143,36 @@ deletion requires `--yes`.
 
 ## Downloading audio
 
+### Desktop requirement: FFmpeg
+
+The workspace `yamu-download` executable is not self-contained: it starts the
+system `ffmpeg` executable for audio validation, container normalization, and
+M4A metadata. Install FFmpeg and make sure this command succeeds before running
+the downloader:
+
+```console
+ffmpeg -version
+```
+
+On Windows, download a Windows build linked from the
+[official FFmpeg download page](https://ffmpeg.org/download.html), extract it,
+and add the extracted `bin` directory containing `ffmpeg.exe` to `PATH`. Open a
+new PowerShell window after changing `PATH`. `ffprobe` is not required by the
+downloader.
+
+The workspace tools build natively with the Rust MSVC toolchain. A complete
+Windows setup from a cloned repository is:
+
+```powershell
+cargo build --release -p yamu-auth -p yamu-download
+.\target\release\yamu-auth.exe login
+.\target\release\yamu-download.exe track "https://music.yandex.ru/album/1193829/track/10994777"
+```
+
+Library users that select the in-process `media-ffmpeg` backend package FFmpeg
+libraries with their application instead and do not need `ffmpeg.exe` at
+runtime.
+
 The `downloads` feature implements the signed `get-file-info` negotiation and
 opens short-lived CDN response streams without forwarding the OAuth token:
 

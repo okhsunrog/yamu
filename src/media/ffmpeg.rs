@@ -202,7 +202,8 @@ fn remux_audio(
     output
         .write_trailer()
         .map_err(av_error("failed to write media trailer"))?;
-    std::fs::File::open(destination)?.sync_all()?;
+    drop(output);
+    sync_file(destination)?;
     Ok(())
 }
 
@@ -376,7 +377,8 @@ fn transcode_audio_mp3(source: &Path, destination: &Path, bitrate_kbps: u32) -> 
     output
         .write_trailer()
         .map_err(av_error("failed to write MP3 trailer"))?;
-    std::fs::File::open(destination)?.sync_all()?;
+    drop(output);
+    sync_file(destination)?;
     Ok(())
 }
 
@@ -553,6 +555,25 @@ fn metadata_dictionary(metadata: &TrackMetadata) -> av::Dictionary<'static> {
 
 fn replace_file_blocking(source: &Path, destination: &Path, replace: bool) -> Result<()> {
     atomic_file::persist(source, destination, replace).map_err(Error::from)
+}
+
+fn sync_file(path: &Path) -> Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            backend(format!(
+                "failed to open temporary media output {} for syncing: {error}",
+                path.display()
+            ))
+        })?;
+    file.sync_all().map_err(|error| {
+        backend(format!(
+            "failed to sync temporary media output {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
