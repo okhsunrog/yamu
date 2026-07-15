@@ -42,6 +42,7 @@ pub enum StateStatus {
     Downloaded,
     Verified,
     Repaired,
+    Unavailable,
     Failed,
 }
 

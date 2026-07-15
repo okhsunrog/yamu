@@ -727,6 +727,7 @@ async fn download_jobs(
 
     let mut downloaded = 0;
     let mut skipped = 0;
+    let mut unavailable = 0;
     let mut failures = Vec::new();
     let mut total = 0;
     while let Some(result) = tasks.join_next().await {
@@ -780,6 +781,16 @@ async fn download_jobs(
                     path.display()
                 );
             }
+            Ok(DownloadStatus::Unavailable { reason }) => {
+                unavailable += 1;
+                state
+                    .record(outcome.index, StateStatus::Unavailable, None, Some(&reason))
+                    .await?;
+                eprintln!(
+                    "[{}/{}] unavailable {}: {reason}",
+                    outcome.index, outcome.total, outcome.label
+                );
+            }
             Err(error) => {
                 state
                     .record(outcome.index, StateStatus::Failed, None, Some(&error))
@@ -797,7 +808,7 @@ async fn download_jobs(
     failures.sort_by_key(|failure| failure.0);
     let width = total.to_string().len().max(2);
     println!(
-        "collection summary: {downloaded} downloaded, {skipped} skipped, {} failed",
+        "collection summary: {downloaded} downloaded, {skipped} skipped, {unavailable} unavailable, {} failed",
         failures.len()
     );
     for (index, label, error) in &failures {
@@ -926,6 +937,9 @@ enum DownloadStatus {
         path: PathBuf,
         reason: String,
     },
+    Unavailable {
+        reason: String,
+    },
 }
 
 async fn download_collection_track(
@@ -1000,14 +1014,32 @@ async fn download_collection_track(
             codec: info.codec,
         })
     }
-    .await
-    .map_err(|error: anyhow::Error| format!("{error:#}"));
+    .await;
+    let result = match result {
+        Ok(status) => Ok(status),
+        Err(error) if is_track_unavailable(&error) => Ok(DownloadStatus::Unavailable {
+            reason: format!("{error:#}"),
+        }),
+        Err(error) => Err(format!("{error:#}")),
+    };
 
     DownloadOutcome {
         index: job.index,
         total: job.total,
         label: job.label,
         result,
+    }
+}
+
+fn is_track_unavailable(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<yamu::Error>() {
+        Some(yamu::Error::DownloadUnavailable { .. }) => true,
+        Some(yamu::Error::Api {
+            status, message, ..
+        }) => {
+            *status == reqwest::StatusCode::FORBIDDEN && message.eq_ignore_ascii_case("no-rights")
+        }
+        _ => false,
     }
 }
 
@@ -1476,6 +1508,28 @@ mod tests {
             normalized_path_extension(Path::new("track.MP3")).unwrap(),
             "mp3"
         );
+    }
+
+    #[test]
+    fn classifies_only_unavailable_track_errors_as_skippable() {
+        let no_rights = anyhow::Error::new(yamu::Error::Api {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "no-rights".to_owned(),
+            body: None,
+        });
+        let unavailable = anyhow::Error::new(yamu::Error::DownloadUnavailable {
+            name: "not-found".to_owned(),
+            message: "track has no downloadable source".to_owned(),
+        });
+        let rate_limited = anyhow::Error::new(yamu::Error::Api {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            message: "rate-limit".to_owned(),
+            body: None,
+        });
+
+        assert!(is_track_unavailable(&no_rights));
+        assert!(is_track_unavailable(&unavailable));
+        assert!(!is_track_unavailable(&rate_limited));
     }
 
     #[test]
