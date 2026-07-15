@@ -18,7 +18,9 @@ use yamu::{
     credentials::{CredentialStore, DEFAULT_PROFILE, RefreshPolicy},
     downloader::{CancellationToken, DownloadEvent, DownloadRequest, Downloader},
     media::ffmpeg_cli::FfmpegCli,
-    models::{Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Track},
+    models::{
+        Album, DownloadInfo, DownloadOptions, DownloadQuality, Id, LyricsFormat, Playlist, Track,
+    },
     resource::{AlbumRef, ArtistRef, PlaylistSourceRef, TrackRef},
 };
 
@@ -431,6 +433,7 @@ async fn download_album(
         &directory,
         "album",
         album_ref.album_id(),
+        &[],
         downloads,
         SyncMode::default(),
         lyrics,
@@ -469,6 +472,7 @@ async fn download_liked(
         &directory,
         "liked",
         &uid.to_string(),
+        &[],
         downloads,
         sync,
         lyrics,
@@ -514,6 +518,7 @@ async fn download_artist(
         &directory,
         "artist",
         artist_ref.artist_id(),
+        &[],
         downloads,
         SyncMode::default(),
         lyrics,
@@ -557,6 +562,8 @@ async fn download_playlist(
             (playlist, source_id)
         }
     };
+    let mut source_aliases = playlist_source_aliases(&playlist);
+    source_aliases.retain(|alias| alias != &source_id);
     let directory = output.unwrap_or_else(|| {
         PathBuf::from(safe_file_component(
             playlist.title.as_deref().unwrap_or("playlist"),
@@ -617,11 +624,38 @@ async fn download_playlist(
         &directory,
         "playlist",
         &source_id,
+        &source_aliases,
         jobs_to_run,
         sync,
         lyrics,
     )
     .await
+}
+
+fn playlist_source_aliases(playlist: &Playlist) -> Vec<String> {
+    let mut aliases = Vec::new();
+    let mut push = |alias: String| {
+        if !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    };
+    if let Some(uuid) = &playlist.playlist_uuid {
+        push(format!("uuid:{uuid}"));
+    }
+    if let Some(kind) = &playlist.kind {
+        if let Some(uid) = &playlist.uid {
+            push(format!("{uid}:{kind}"));
+        }
+        if let Some(owner) = &playlist.owner {
+            if let Some(uid) = &owner.uid {
+                push(format!("{uid}:{kind}"));
+            }
+            if let Some(login) = &owner.login {
+                push(format!("{login}:{kind}"));
+            }
+        }
+    }
+    aliases
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -634,11 +668,19 @@ async fn download_jobs(
     directory: &Path,
     source_kind: &str,
     source_id: &str,
+    source_aliases: &[String],
     jobs: Vec<DownloadJob>,
     sync: SyncMode,
     lyrics: Option<LyricsFormat>,
 ) -> Result<()> {
-    let plan = CollectionStateStore::plan(directory, source_kind, source_id, &jobs).await?;
+    let plan = CollectionStateStore::plan_with_aliases(
+        directory,
+        source_kind,
+        source_id,
+        source_aliases,
+        &jobs,
+    )
+    .await?;
     let untracked = jobs.len().saturating_sub(plan.known_paths);
     if sync.dry_run {
         println!(
@@ -661,7 +703,14 @@ async fn download_jobs(
         }
         return Ok(());
     }
-    let state = CollectionStateStore::open(directory, source_kind, source_id, &jobs).await?;
+    let state = CollectionStateStore::open_with_aliases(
+        directory,
+        source_kind,
+        source_id,
+        source_aliases,
+        &jobs,
+    )
+    .await?;
     let semaphore = Arc::new(Semaphore::new(concurrency as usize));
     let artwork = ArtworkCache::new()?;
     let mut tasks = JoinSet::new();

@@ -67,13 +67,25 @@ struct StateEntry {
 }
 
 impl CollectionStateStore {
+    #[cfg(test)]
     pub async fn plan(
         directory: &Path,
         source_kind: &str,
         source_id: &str,
         jobs: &[DownloadJob],
     ) -> Result<CollectionPlan> {
-        let old_state = load_state(directory, source_kind, source_id).await?;
+        Self::plan_with_aliases(directory, source_kind, source_id, &[], jobs).await
+    }
+
+    pub async fn plan_with_aliases(
+        directory: &Path,
+        source_kind: &str,
+        source_id: &str,
+        source_aliases: &[String],
+        jobs: &[DownloadJob],
+    ) -> Result<CollectionPlan> {
+        let old_state =
+            load_state_with_aliases(directory, source_kind, source_id, source_aliases).await?;
         let desired = jobs
             .iter()
             .map(|job| (job.track_id.as_str(), desired_stem(directory, job)))
@@ -119,14 +131,26 @@ impl CollectionStateStore {
         })
     }
 
+    #[cfg(test)]
     pub async fn open(
         directory: &Path,
         source_kind: &str,
         source_id: &str,
         jobs: &[DownloadJob],
     ) -> Result<Self> {
+        Self::open_with_aliases(directory, source_kind, source_id, &[], jobs).await
+    }
+
+    pub async fn open_with_aliases(
+        directory: &Path,
+        source_kind: &str,
+        source_id: &str,
+        source_aliases: &[String],
+        jobs: &[DownloadJob],
+    ) -> Result<Self> {
         let path = directory.join(STATE_FILE);
-        let old_state = load_state(directory, source_kind, source_id).await?;
+        let old_state =
+            load_state_with_aliases(directory, source_kind, source_id, source_aliases).await?;
         let old_entries = old_state
             .iter()
             .flat_map(|state| state.entries.values())
@@ -317,10 +341,20 @@ impl CollectionStateStore {
     }
 }
 
+#[cfg(test)]
 async fn load_state(
     directory: &Path,
     source_kind: &str,
     source_id: &str,
+) -> Result<Option<CollectionState>> {
+    load_state_with_aliases(directory, source_kind, source_id, &[]).await
+}
+
+async fn load_state_with_aliases(
+    directory: &Path,
+    source_kind: &str,
+    source_id: &str,
+    source_aliases: &[String],
 ) -> Result<Option<CollectionState>> {
     let bytes = match tokio::fs::read(directory.join(STATE_FILE)).await {
         Ok(bytes) => Some(bytes),
@@ -337,7 +371,8 @@ async fn load_state(
     Ok(old.filter(|state| {
         state.version == STATE_VERSION
             && state.source_kind == source_kind
-            && state.source_id == source_id
+            && (state.source_id == source_id
+                || source_aliases.iter().any(|alias| alias == &state.source_id))
     }))
 }
 
@@ -473,6 +508,42 @@ mod tests {
         );
         let plan = CollectionStateStore::plan(&directory, "liked", "7", &jobs).await?;
         assert_eq!(plan.known_paths, 1);
+        tokio::fs::remove_dir_all(directory).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn accepts_an_owner_kind_manifest_when_syncing_by_uuid() -> Result<()> {
+        let directory = test_directory("playlist-source-alias");
+        tokio::fs::create_dir_all(&directory).await?;
+        let jobs = [test_job(&directory)];
+        let owner_kind = "owner:42";
+        let old_store =
+            CollectionStateStore::open(&directory, "playlist", owner_kind, &jobs).await?;
+        let audio = directory.join("01 - Artist - Track.flac");
+        old_store
+            .record(1, StateStatus::Downloaded, Some(&audio), None)
+            .await?;
+        old_store.flush().await?;
+
+        let aliases = [owner_kind.to_owned()];
+        let uuid = "uuid:fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f";
+        let plan =
+            CollectionStateStore::plan_with_aliases(&directory, "playlist", uuid, &aliases, &jobs)
+                .await?;
+        let migrated =
+            CollectionStateStore::open_with_aliases(&directory, "playlist", uuid, &aliases, &jobs)
+                .await?;
+        migrated.flush().await?;
+
+        assert_eq!(plan.known_paths, 1);
+        let state = load_state(&directory, "playlist", uuid)
+            .await?
+            .context("state was not migrated to the UUID identity")?;
+        assert_eq!(
+            state.entries[&1].path.as_deref(),
+            Some(Path::new("01 - Artist - Track.flac"))
+        );
         tokio::fs::remove_dir_all(directory).await?;
         Ok(())
     }
