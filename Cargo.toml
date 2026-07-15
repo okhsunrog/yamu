@@ -96,6 +96,6 @@ uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread"] }
 uuid.workspace = true
 wiremock.workspace = true

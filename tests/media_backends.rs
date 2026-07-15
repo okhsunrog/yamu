@@ -1,6 +1,9 @@
 #![cfg(any(feature = "media-ffmpeg-cli", feature = "media-ffmpeg"))]
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use yamu::media::{MediaBackend, TrackMetadata, verify_audio_file, write_metadata};
 
@@ -64,6 +67,7 @@ async fn exercise_m4a_backend<B: MediaBackend>(backend: B) {
         audio.to_str().unwrap(),
     ])
     .await;
+    let original_duration = probe_duration(&audio).await;
     run_ffmpeg(&[
         "-f",
         "lavfi",
@@ -97,6 +101,7 @@ async fn exercise_m4a_backend<B: MediaBackend>(backend: B) {
     .await
     .unwrap();
     verify_audio_file(&backend, &audio, "m4a").await.unwrap();
+    assert_duration_preserved(original_duration, probe_duration(&audio).await);
 
     let probe = tokio::process::Command::new("ffprobe")
         .args([
@@ -160,10 +165,27 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
         source.to_str().unwrap(),
     ])
     .await;
+    let original_duration = probe_duration(&source).await;
     backend
         .remux_flac(source, destination.clone(), false)
         .await
         .unwrap();
+    write_metadata(
+        &backend,
+        &destination,
+        &TrackMetadata {
+            title: "Title".into(),
+            artist: "Artist".into(),
+            ..TrackMetadata::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    verify_audio_file(&backend, &destination, "flac")
+        .await
+        .unwrap();
+    assert_duration_preserved(original_duration, probe_duration(&destination).await);
     let probe = tokio::process::Command::new("ffprobe")
         .args([
             "-v",
@@ -182,7 +204,7 @@ async fn exercise_flac_remux<B: MediaBackend>(backend: B) {
     assert!(probe.status.success());
     let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
     assert_eq!(probe["streams"][0]["codec_name"], "flac");
-    assert_eq!(probe["format"]["tags"]["title"], "Original title");
+    assert_eq!(probe["format"]["tags"]["TITLE"], "Title");
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 
@@ -252,6 +274,40 @@ async fn require_command(command: &str) {
     assert!(
         available,
         "{command} is required to execute the media backend tests"
+    );
+}
+
+async fn probe_duration(path: &Path) -> f64 {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+fn assert_duration_preserved(expected: f64, actual: f64) {
+    let difference = (actual - expected).abs();
+    assert!(
+        difference <= 0.002,
+        "duration changed from {expected:.6}s to {actual:.6}s"
     );
 }
 
