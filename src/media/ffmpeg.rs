@@ -2,16 +2,13 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use ffmpeg_next as av;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime, ensure_decoded_duration};
-use crate::atomic_file;
-
-static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
+use crate::{atomic_file, temporary_file};
 
 #[derive(Clone, Debug, Default)]
 pub struct Ffmpeg;
@@ -28,7 +25,7 @@ impl MediaBackend for Ffmpeg {
         artwork: Option<Vec<u8>>,
     ) -> Result<()> {
         tokio::task::spawn_blocking(move || {
-            let output = sibling_temporary(&path, "metadata.m4a");
+            let output = temporary_file::sibling(&path, "metadata", Some("m4a"));
             let result = remux_audio(&path, &output, Some(&metadata), artwork.as_deref(), "ipod")
                 .and_then(|()| replace_file_blocking(&output, &path, true));
             if result.is_err() {
@@ -47,7 +44,7 @@ impl MediaBackend for Ffmpeg {
                     destination.display()
                 )));
             }
-            let output = sibling_temporary(&destination, "remux.flac");
+            let output = temporary_file::sibling(&destination, "remux", Some("flac"));
             let result = remux_audio(&source, &output, None, None, "flac")
                 .and_then(|()| replace_file_blocking(&output, &destination, replace));
             if result.is_err() {
@@ -72,7 +69,7 @@ impl MediaBackend for Ffmpeg {
                     destination.display()
                 )));
             }
-            let output = sibling_temporary(&destination, "transcode.mp3");
+            let output = temporary_file::sibling(&destination, "transcode", Some("mp3"));
             let result = transcode_audio_mp3(&source, &output, bitrate_kbps)
                 .and_then(|()| replace_file_blocking(&output, &destination, replace));
             if result.is_err() {
@@ -574,16 +571,6 @@ fn sync_file(path: &Path) -> Result<()> {
             path.display()
         ))
     })
-}
-
-fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(".{name}.{}-{nonce}.{suffix}", std::process::id()))
 }
 
 fn av_error(context: &'static str) -> impl FnOnce(av::Error) -> Error {

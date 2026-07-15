@@ -22,6 +22,12 @@ mod error;
 pub mod media;
 pub mod models;
 pub mod resource;
+#[cfg(any(
+    feature = "downloader",
+    feature = "media-ffmpeg-cli",
+    feature = "media-ffmpeg"
+))]
+mod temporary_file;
 
 pub use client::{Client, ClientBuilder, ReadRequestPolicy, SearchOptions, SearchType};
 pub use error::{Error, Result};

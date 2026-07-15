@@ -10,6 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::{sync::Semaphore, task::JoinSet};
 use yamu::{
@@ -32,6 +33,10 @@ use metadata::{ArtworkCache, EmbeddedLyrics, TrackMetadata, verify_audio_file, w
 use state::{CollectionStateStore, StateStatus};
 
 const ENRICHMENT_VERSION: u32 = 1;
+// Leave room for the leading dot and `.ym-enriched.json` sidecar suffix while
+// staying below both the common 255-byte Unix limit and NTFS's 255 UTF-16 units.
+const MAX_PORTABLE_COMPONENT_LEN: usize = 236;
+const MAX_AUDIO_STEM_LEN: usize = MAX_PORTABLE_COMPONENT_LEN - ".flac".len();
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -499,7 +504,7 @@ async fn download_artist(
         .next()
         .context("artist metadata was not returned")?;
     let directory = output.unwrap_or_else(|| {
-        PathBuf::from(safe_file_component(
+        PathBuf::from(portable_directory_component(
             artist.name.as_deref().unwrap_or("Unknown artist"),
         ))
     });
@@ -565,7 +570,7 @@ async fn download_playlist(
     let mut source_aliases = playlist_source_aliases(&playlist);
     source_aliases.retain(|alias| alias != &source_id);
     let directory = output.unwrap_or_else(|| {
-        PathBuf::from(safe_file_component(
+        PathBuf::from(portable_directory_component(
             playlist.title.as_deref().unwrap_or("playlist"),
         ))
     });
@@ -586,7 +591,7 @@ async fn download_playlist(
             .collect::<Vec<_>>()
             .join(", ");
         let title = track.title.as_deref().unwrap_or("Untitled").to_owned();
-        let stem = format!(
+        let stem = portable_audio_stem(&format!(
             "{:0width$} - {} - {}",
             index + 1,
             safe_file_component(if artists.is_empty() {
@@ -595,7 +600,7 @@ async fn download_playlist(
                 &artists
             }),
             safe_file_component(&title),
-        );
+        ));
         let job = DownloadJob {
             index: index + 1,
             total,
@@ -866,9 +871,10 @@ async fn prune_tracked_audio(directory: &Path, path: &Path) -> Result<bool> {
             sidecars.push(sidecar);
         }
     }
-    let marker = enrichment_marker_path(&candidate)?;
-    if let Some(marker) = checked_prunable_file(&root, &marker, "enrichment marker").await? {
-        sidecars.push(marker);
+    for marker in enrichment_marker_paths(&candidate)? {
+        if let Some(marker) = checked_prunable_file(&root, &marker, "enrichment marker").await? {
+            sidecars.push(marker);
+        }
     }
     let mut removed = false;
     for sidecar in sidecars {
@@ -1094,18 +1100,21 @@ async fn enrichment_is_current(
     audio_path: &Path,
     requested_lyrics: Option<LyricsFormat>,
 ) -> Result<bool> {
-    let marker = enrichment_marker_path(audio_path)?;
-    let bytes = match tokio::fs::read(marker).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-    let Ok(marker) = serde_json::from_slice::<EnrichmentMarker>(&bytes) else {
-        return Ok(false);
-    };
-    let requested_lyrics = requested_lyrics.map(|format| format.file_extension());
-    Ok(marker.version == ENRICHMENT_VERSION
-        && requested_lyrics.is_none_or(|requested| marker.lyrics.as_deref() == Some(requested)))
+    for path in enrichment_marker_paths(audio_path)? {
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let Ok(marker) = serde_json::from_slice::<EnrichmentMarker>(&bytes) else {
+            return Ok(false);
+        };
+        let requested_lyrics = requested_lyrics.map(|format| format.file_extension());
+        return Ok(marker.version == ENRICHMENT_VERSION
+            && requested_lyrics
+                .is_none_or(|requested| marker.lyrics.as_deref() == Some(requested)));
+    }
+    Ok(false)
 }
 
 async fn write_enrichment_marker(
@@ -1118,11 +1127,22 @@ async fn write_enrichment_marker(
     };
     let mut bytes = serde_json::to_vec_pretty(&marker)?;
     bytes.push(b'\n');
-    write_atomic(&enrichment_marker_path(audio_path)?, &bytes).await
+    write_atomic(&enrichment_marker_path(audio_path)?, &bytes).await?;
+    if let Some(legacy) = legacy_enrichment_marker_path(audio_path)? {
+        remove_if_exists(&legacy).await?;
+    }
+    Ok(())
 }
 
 async fn clear_enrichment_marker(audio_path: &Path) -> Result<()> {
-    match tokio::fs::remove_file(enrichment_marker_path(audio_path)?).await {
+    for marker in enrichment_marker_paths(audio_path)? {
+        remove_if_exists(&marker).await?;
+    }
+    Ok(())
+}
+
+async fn remove_if_exists(path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -1135,18 +1155,34 @@ fn enrichment_marker_path(audio_path: &Path) -> Result<PathBuf> {
         .file_name()
         .context("audio path must contain a file name")?
         .to_string_lossy();
-    Ok(parent.join(format!(".{file_name}.ym-enriched.json")))
+    Ok(parent.join(format!(".yamu-enriched-{}.json", short_hash(&file_name))))
+}
+
+fn legacy_enrichment_marker_path(audio_path: &Path) -> Result<Option<PathBuf>> {
+    let parent = audio_path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = audio_path
+        .file_name()
+        .context("audio path must contain a file name")?
+        .to_string_lossy();
+    let marker_name = format!(".{file_name}.ym-enriched.json");
+    Ok(component_fits(&marker_name, 255).then(|| parent.join(marker_name)))
+}
+
+fn enrichment_marker_paths(audio_path: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![enrichment_marker_path(audio_path)?];
+    if let Some(legacy) = legacy_enrichment_marker_path(audio_path)? {
+        paths.push(legacy);
+    }
+    Ok(paths)
 }
 
 async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(parent).await?;
-    let file_name = path
-        .file_name()
-        .context("atomic destination must contain a file name")?
-        .to_string_lossy();
+    path.file_name()
+        .context("atomic destination must contain a file name")?;
     let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(".{file_name}.part-{}-{nonce}", std::process::id()));
+    let temporary = parent.join(format!(".yamu-{}-{nonce}-atomic.part", std::process::id()));
     let result = async {
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -1294,11 +1330,72 @@ fn safe_file_component(value: &str) -> String {
         })
         .collect();
     let trimmed = sanitized.trim_matches([' ', '.']);
-    if trimmed.is_empty() {
+    let component = if trimmed.is_empty() {
         "untitled".to_owned()
     } else {
         trimmed.to_owned()
+    };
+    if is_windows_reserved_component(&component) {
+        format!("_{component}")
+    } else {
+        component
     }
+}
+
+fn is_windows_reserved_component(value: &str) -> bool {
+    let basename = value.split('.').next().unwrap_or(value);
+    let upper = basename.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) || upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+        .is_some_and(|number| matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+}
+
+fn portable_directory_component(value: &str) -> String {
+    shorten_component(&safe_file_component(value), MAX_PORTABLE_COMPONENT_LEN)
+}
+
+fn portable_audio_stem(value: &str) -> String {
+    shorten_component(value, MAX_AUDIO_STEM_LEN)
+}
+
+fn shorten_component(value: &str, limit: usize) -> String {
+    if component_fits(value, limit) {
+        return value.to_owned();
+    }
+
+    let hash = short_hash(value);
+    let suffix = format!(" ~{hash}");
+    let prefix_byte_limit = limit.saturating_sub(suffix.len());
+    let prefix_utf16_limit = limit.saturating_sub(suffix.encode_utf16().count());
+    let mut prefix = String::new();
+    let mut utf16_len = 0;
+    for character in value.chars() {
+        let next_bytes = prefix.len() + character.len_utf8();
+        let next_utf16 = utf16_len + character.len_utf16();
+        if next_bytes > prefix_byte_limit || next_utf16 > prefix_utf16_limit {
+            break;
+        }
+        prefix.push(character);
+        utf16_len = next_utf16;
+    }
+    let prefix = prefix.trim_end_matches([' ', '.']);
+    format!("{prefix}{suffix}")
+}
+
+fn component_fits(value: &str, limit: usize) -> bool {
+    value.len() <= limit && value.encode_utf16().count() <= limit
+}
+
+fn short_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]
+    )
 }
 
 fn album_directory_name(album: &Album) -> String {
@@ -1317,12 +1414,12 @@ fn album_directory_name(album: &Album) -> String {
         .year
         .map(|year| format!(" ({year})"))
         .unwrap_or_default();
-    format!(
+    portable_directory_component(&format!(
         "{} - {}{}",
         safe_file_component(artist),
         safe_file_component(album.title.as_deref().unwrap_or("Untitled album")),
         year
-    )
+    ))
 }
 
 fn album_download_jobs(album: &Album, directory: &Path) -> Result<Vec<DownloadJob>> {
@@ -1354,12 +1451,12 @@ fn album_download_jobs(album: &Album, directory: &Path) -> Result<Vec<DownloadJo
                 total,
                 track_id: track.id.to_string(),
                 label: format!("{} — {}", metadata.artist, metadata.title),
-                stem: format!(
+                stem: portable_audio_stem(&format!(
                     "{:0track_width$} - {} - {}",
                     track_index + 1,
                     safe_file_component(&metadata.artist),
                     safe_file_component(&metadata.title),
-                ),
+                )),
                 directory: track_directory.clone(),
                 metadata,
             });
@@ -1381,12 +1478,12 @@ fn ordered_track_jobs(tracks: &[Track], directory: &Path) -> Vec<DownloadJob> {
                 total,
                 track_id: track.id.to_string(),
                 label: format!("{} — {}", metadata.artist, metadata.title),
-                stem: format!(
+                stem: portable_audio_stem(&format!(
                     "{:0width$} - {} - {}",
                     index + 1,
                     safe_file_component(&metadata.artist),
                     safe_file_component(&metadata.title),
-                ),
+                )),
                 directory: directory.to_owned(),
                 metadata,
             }
@@ -1396,9 +1493,12 @@ fn ordered_track_jobs(tracks: &[Track], directory: &Path) -> Vec<DownloadJob> {
 
 fn default_track_filename(metadata: &TrackMetadata, extension: &str) -> String {
     format!(
-        "{} - {}.{extension}",
-        safe_file_component(&metadata.artist),
-        safe_file_component(&metadata.title),
+        "{}.{extension}",
+        portable_audio_stem(&format!(
+            "{} - {}",
+            safe_file_component(&metadata.artist),
+            safe_file_component(&metadata.title),
+        )),
     )
 }
 
@@ -1492,6 +1592,49 @@ mod tests {
             default_track_filename(&metadata, "flac"),
             "Artist_Band - Song_ Part 1.flac"
         );
+    }
+
+    #[test]
+    fn bounds_long_cyrillic_track_names_for_portable_filesystems() {
+        let artist = "Геннадий Трофимов, Феликс Иванов, Алексей Рыбников, Государственный академический русский хор СССР, Александр Корнеев, Государственный симфонический оркестр СССР";
+        let title = "\"Юнона\" и \"Авось\": Романс Резанова \"Я тебя никогда не забуду\"";
+        let stem = portable_audio_stem(&format!(
+            "379 - {} - {}",
+            safe_file_component(artist),
+            safe_file_component(title)
+        ));
+        let filename = format!("{stem}.flac");
+
+        assert!(filename.len() <= MAX_PORTABLE_COMPONENT_LEN);
+        assert!(filename.encode_utf16().count() <= MAX_PORTABLE_COMPONENT_LEN);
+        assert!(filename.ends_with(".flac"));
+        assert!(stem.contains(" ~"));
+
+        let marker = enrichment_marker_path(Path::new(&filename)).unwrap();
+        let marker = marker.file_name().unwrap().to_string_lossy();
+        assert!(marker.starts_with(".yamu-enriched-"));
+        assert!(!marker.contains("Геннадий"));
+        assert!(marker.len() <= 255);
+        assert!(marker.encode_utf16().count() <= 255);
+
+        let other = portable_audio_stem(&format!(
+            "379 - {} - {} (другая версия)",
+            safe_file_component(artist),
+            safe_file_component(title)
+        ));
+        assert_ne!(stem, other);
+    }
+
+    #[test]
+    fn escapes_windows_reserved_file_components() {
+        for reserved in [
+            "CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "com9.log", "LPT1", "Lpt9", "CLOCK$",
+            "CONIN$", "CONOUT$",
+        ] {
+            assert!(safe_file_component(reserved).starts_with('_'), "{reserved}");
+        }
+        assert_eq!(safe_file_component("COM10"), "COM10");
+        assert_eq!(safe_file_component("console"), "console");
     }
 
     #[test]
@@ -1778,6 +1921,35 @@ mod tests {
                 .unwrap()
         );
         assert!(enrichment_is_current(&audio, None).await.unwrap());
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_and_migrates_legacy_enrichment_markers() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "yamu-download-legacy-enrichment-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("track.flac");
+        let legacy = legacy_enrichment_marker_path(&audio).unwrap().unwrap();
+        tokio::fs::write(&legacy, br#"{"version":1,"lyrics":null}"#)
+            .await
+            .unwrap();
+
+        assert!(enrichment_is_current(&audio, None).await.unwrap());
+        write_enrichment_marker(&audio, None).await.unwrap();
+        assert!(!tokio::fs::try_exists(legacy).await.unwrap());
+        assert!(
+            tokio::fs::try_exists(enrichment_marker_path(&audio).unwrap())
+                .await
+                .unwrap()
+        );
 
         tokio::fs::remove_dir_all(directory).await.unwrap();
     }

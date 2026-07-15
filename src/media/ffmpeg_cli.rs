@@ -2,16 +2,13 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use tokio::process::Command;
 
 use super::{Error, MediaBackend, Result, TrackMetadata, detect_mime, ensure_decoded_duration};
-use crate::atomic_file;
-
-static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
+use crate::{atomic_file, temporary_file};
 
 #[derive(Clone, Debug, Default)]
 pub struct FfmpegCli;
@@ -98,13 +95,13 @@ async fn write_m4a_metadata(
     if path.file_name().is_none() {
         return Err(backend("M4A path must contain a file name"));
     }
-    let output_path = sibling_temporary(path, "metadata.m4a");
+    let output_path = temporary_file::sibling(path, "metadata", Some("m4a"));
     let picture_path = artwork.as_ref().map(|picture| {
         let extension = match detect_mime(picture) {
             lofty::picture::MimeType::Png => "png",
             _ => "jpg",
         };
-        sibling_temporary(path, &format!("cover.{extension}"))
+        temporary_file::sibling(path, "cover", Some(extension))
     });
     let result = async {
         if let (Some(picture_path), Some(picture)) = (&picture_path, &artwork) {
@@ -180,7 +177,7 @@ async fn remux_flac(source: &Path, destination: &Path, replace: bool) -> Result<
             destination.display()
         )));
     }
-    let temporary = sibling_temporary(destination, "remux.part");
+    let temporary = temporary_file::sibling(destination, "remux", Some("part"));
     let result = async {
         let output = Command::new("ffmpeg")
             .arg("-nostdin")
@@ -223,7 +220,7 @@ async fn transcode_mp3(
             destination.display()
         )));
     }
-    let temporary = sibling_temporary(destination, "transcode.mp3");
+    let temporary = temporary_file::sibling(destination, "transcode", Some("mp3"));
     let result = async {
         let output = Command::new("ffmpeg")
             .arg("-nostdin")
@@ -308,16 +305,6 @@ fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> 
             destination.display()
         ))
     })
-}
-
-fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(".{name}.{suffix}-{}-{nonce}", std::process::id()))
 }
 
 fn backend(message: impl Into<String>) -> Error {

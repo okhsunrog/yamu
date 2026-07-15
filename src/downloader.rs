@@ -2,10 +2,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -21,9 +18,8 @@ use crate::{
     Client, atomic_file,
     media::{self, MediaBackend},
     models::{AudioCodec, DownloadInfo},
+    temporary_file,
 };
-
-static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Current stage of a download operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,10 +177,9 @@ impl<B: MediaBackend> Downloader<B> {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let temporary = sibling_temporary(&request.destination, "download.part");
-        let source = sibling_temporary(&request.destination, "source.m4a");
-        let normalized =
-            sibling_temporary_with_extension(&request.destination, "normalized", "flac");
+        let temporary = temporary_file::sibling(&request.destination, "download", Some("part"));
+        let source = temporary_file::sibling(&request.destination, "source", Some("m4a"));
+        let normalized = temporary_file::sibling(&request.destination, "normalized", Some("flac"));
         let _ = tokio::fs::remove_file(&temporary).await;
         let _ = tokio::fs::remove_file(&source).await;
         let _ = tokio::fs::remove_file(&normalized).await;
@@ -385,29 +380,6 @@ impl Decryptor {
             Self::Aes256(cipher) => cipher.apply_keystream(bytes),
         }
     }
-}
-
-fn sibling_temporary(destination: &Path, suffix: &str) -> PathBuf {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(".{name}.{suffix}-{}-{nonce}", std::process::id()))
-}
-
-fn sibling_temporary_with_extension(destination: &Path, suffix: &str, extension: &str) -> PathBuf {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let nonce = TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(
-        ".{name}.{suffix}-{}-{nonce}.{extension}",
-        std::process::id()
-    ))
 }
 
 fn replace_file(source: &Path, destination: &Path, replace: bool) -> Result<()> {
